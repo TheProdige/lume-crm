@@ -39,6 +39,9 @@ function FitBounds({ pins }: { pins: MapJobPin[] }) {
   useEffect(() => {
     if (pins.length === 0) return;
 
+    // Ensure the map container has correct dimensions before fitting
+    map.invalidateSize({ animate: false });
+
     if (pins.length === 1) {
       map.flyTo([pins[0].latitude, pins[0].longitude], 13, { duration: 0.6 });
       return;
@@ -71,6 +74,11 @@ export default function CRMMap({
   const [selectedPin, setSelectedPin] = useState<MapJobPin | null>(null);
   const mapRef = useRef<L.Map | null>(null);
 
+  // Clear stale selection when pins change (e.g. switching date filters)
+  useEffect(() => {
+    setSelectedPin(null);
+  }, [pins]);
+
   const icons = useMemo(() => {
     return pins.map((pin) => ({
       id: pin.id,
@@ -80,7 +88,7 @@ export default function CRMMap({
   }, [pins]);
 
   return (
-    <div className={cn('relative overflow-hidden rounded-2xl border-[1.5px] border-outline bg-surface-tertiary', heightClassName, className)}>
+    <div className={cn('relative overflow-hidden rounded-2xl border border-outline bg-surface-tertiary', heightClassName, className)}>
       <MapContainer
         ref={mapRef}
         center={DEFAULT_CENTER}
@@ -122,7 +130,7 @@ export default function CRMMap({
       {/* Job count badge */}
       {showJobCount && (
         <div className="absolute bottom-3 left-3 z-[1000]">
-          <div className="rounded-xl border-[1.5px] border-outline bg-surface px-3 py-2 shadow-md">
+          <div className="rounded-xl border border-outline bg-surface px-3 py-2 shadow-md">
             <p className="text-xs font-bold text-text-primary">{pins.length} jobs shown</p>
             {missingLocationCount > 0 && (
               <p className="text-[11px] text-warning font-medium mt-0.5">

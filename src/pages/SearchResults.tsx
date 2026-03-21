@@ -5,6 +5,7 @@ import { SearchEntityItem, SearchResultsPayload, SearchTab, fetchSearchResults }
 import { cn } from '../lib/utils';
 import { escapeRegExp, getSearchEntityLabel, getSearchItemHref } from '../lib/searchHelpers';
 import PageHeader from '../components/ui/PageHeader';
+import { useTranslation } from '../i18n';
 
 const PAGE_SIZE = 20;
 
@@ -33,7 +34,7 @@ function highlightText(text: string, query: string) {
     const isMatch = tokens.some((token) => token.toLowerCase() === part.toLowerCase());
     if (!isMatch) return <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>;
     return (
-      <mark key={`${part}-${index}`} className="rounded bg-amber-200/70 px-0.5 text-inherit">
+      <mark key={`${part}-${index}`} className="rounded bg-surface-tertiary px-0.5 text-inherit">
         {part}
       </mark>
     );
@@ -53,10 +54,11 @@ function ResultsList({
   items: SearchEntityItem[];
   query: string;
 }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
 
   if (items.length === 0) {
-    return <p className="text-[13px] text-text-secondary">No results in this section.</p>;
+    return <p className="text-[13px] text-text-secondary">{t.searchResults.noResultsInSection}</p>;
   }
 
   return (
@@ -68,7 +70,7 @@ function ResultsList({
             key={`${item.type}-${item.id}`}
             type="button"
             onClick={() => navigate(getSearchItemHref(item.type, item.id))}
-            className="w-full rounded-xl border-[1.5px] border-outline-subtle bg-white px-3 py-3 text-left transition-colors hover:bg-surface-secondary"
+            className="w-full rounded-xl border border-outline-subtle bg-white px-3 py-3 text-left transition-colors hover:bg-surface-secondary"
           >
             <div className="flex items-start gap-3">
               <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-full border border-black/10 bg-black/[0.03]">
@@ -126,6 +128,7 @@ function PaginationControls({
 }
 
 export default function SearchResultsPage() {
+  const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const rawQuery = searchParams.get('q') || '';
@@ -165,7 +168,7 @@ export default function SearchResultsPage() {
       } catch (err: any) {
         if (!cancelled) {
           setPayload(null);
-          setError(err?.message || 'Failed to load search results.');
+          setError(err?.message || t.searchResults.failedLoad);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -183,10 +186,10 @@ export default function SearchResultsPage() {
 
   const tabs = useMemo(
     () => [
-      { key: 'all' as const, label: `All (${counts.all})` },
-      { key: 'clients' as const, label: `Clients (${counts.clients})` },
-      { key: 'jobs' as const, label: `Jobs (${counts.jobs})` },
-      { key: 'leads' as const, label: `Leads (${counts.leads})` },
+      { key: 'all' as const, label: `${t.common.all} (${counts.all})` },
+      { key: 'clients' as const, label: `${t.clients.title} (${counts.clients})` },
+      { key: 'jobs' as const, label: `${t.jobs.title} (${counts.jobs})` },
+      { key: 'leads' as const, label: `${t.leads.title} (${counts.leads})` },
     ],
     [counts.all, counts.clients, counts.jobs, counts.leads]
   );
@@ -230,7 +233,7 @@ export default function SearchResultsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title={`Search results for '${query}'`} subtitle="Global search" />
+      <PageHeader title={`${t.searchResults.title} '${query}'`} subtitle={t.searchResults.globalSearch} />
 
       <div className="flex flex-wrap items-center gap-2">
         {tabs.map((tabOption) => (
@@ -260,7 +263,7 @@ export default function SearchResultsPage() {
       ) : null}
 
       {!loading && error ? (
-        <div className="section-card border-rose-100 p-4 text-[13px] text-rose-700">{error}</div>
+        <div className="section-card border-danger/30 p-4 text-[13px] text-danger">{error}</div>
       ) : null}
 
       {!loading && !error && groups ? (
@@ -281,7 +284,7 @@ export default function SearchResultsPage() {
                         onClick={() => changeTab(groupKey)}
                         className="text-[11px] font-medium text-text-secondary underline"
                       >
-                        Open {getSearchEntityLabel(groupKey === 'clients' ? 'client' : groupKey === 'jobs' ? 'job' : 'lead')} tab
+                        {t.searchResults.openTab.replace('{entity}', getSearchEntityLabel(groupKey === 'clients' ? 'client' : groupKey === 'jobs' ? 'job' : 'lead'))}
                       </button>
                     ) : null}
                   </div>
@@ -314,7 +317,7 @@ export default function SearchResultsPage() {
           {counts.all === 0 ? (
             <div className="section-card p-8 text-center">
               <SearchIcon className="mx-auto h-8 w-8 text-text-tertiary" />
-              <p className="mt-2 text-[13px] text-text-secondary">No matching clients, jobs, or leads found.</p>
+              <p className="mt-2 text-[13px] text-text-secondary">{t.searchResults.noMatchingResults}</p>
             </div>
           ) : null}
         </div>

@@ -1,42 +1,57 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { useTranslation } from '../i18n';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  X, 
-  Edit2, 
-  Trash2, 
-  Calendar, 
-  Clock, 
-  User, 
-  MapPin, 
-  Phone, 
-  Mail, 
-  DollarSign, 
+import {
+  X,
+  Edit2,
+  Trash2,
+  Calendar,
+  Clock,
+  User,
+  MapPin,
+  Phone,
+  Mail,
+  DollarSign,
   FileText,
   Users,
-  CheckCircle2,
-  AlertCircle,
   Briefcase
 } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { format } from 'date-fns';
+import { getJobLineItems, type JobLineItem } from '../lib/jobsApi';
+import type { Job } from '../types';
 
 interface JobDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onEdit: () => void;
   onDelete: (id: string) => void;
-  job: any;
+  job: Job | null;
 }
 
-// ADDED: Job Details Modal
 export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job }: JobDetailsModalProps) {
+  const { t } = useTranslation();
+  const [lineItems, setLineItems] = useState<JobLineItem[]>([]);
+
+  useEffect(() => {
+    if (!isOpen || !job?.id) {
+      setLineItems([]);
+      return;
+    }
+    getJobLineItems(job.id).then(setLineItems).catch(() => setLineItems([]));
+  }, [isOpen, job?.id]);
+
   if (!job) return null;
 
   const handleDelete = () => {
-    if (window.confirm('Are you sure you want to delete this job? This action cannot be undone.')) {
+    if (window.confirm(t.modals.deleteJobConfirm)) {
       onDelete(job.id);
     }
   };
+
+  const jobAddress = job.property_address || job.address || null;
+  const scheduledDate = job.scheduled_at ? new Date(job.scheduled_at) : null;
+  const endDate = job.end_at ? new Date(job.end_at) : null;
 
   return (
     <AnimatePresence>
@@ -51,10 +66,7 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
             {/* Header */}
             <div className="p-8 border-b border-border flex justify-between items-start bg-surface-secondary/50">
               <div className="flex items-center gap-4">
-                <div className={cn(
-                  "w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg",
-                  job.color || "bg-black"
-                )}>
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg bg-black">
                   <Briefcase size={28} className="text-white" />
                 </div>
                 <div>
@@ -62,19 +74,20 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
                     <h2 className="text-2xl font-bold tracking-tight text-text-primary">{job.title}</h2>
                     <span className={cn(
                       "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border",
-                      job.status === 'Done' ? "bg-success-light text-success border-success" :
+                      job.status === 'Completed' ? "bg-success-light text-success border-success" :
                       job.status === 'Scheduled' ? "bg-info-light text-info border-info" :
+                      job.status === 'Cancelled' ? "bg-danger-light text-danger border-danger" :
                       "bg-warning-light text-warning border-warning"
                     )}>
-                      {job.status || 'Scheduled'}
+                      {job.status || 'Draft'}
                     </span>
                   </div>
                   <p className="text-xs font-medium text-text-tertiary flex items-center gap-2">
-                    Job ID: <span className="text-text-primary font-bold">#{job.id.slice(0, 8).toUpperCase()}</span>
+                    Job #{job.job_number || job.id.slice(0, 8).toUpperCase()}
                   </p>
                 </div>
               </div>
-              <button 
+              <button
                 onClick={onClose}
                 className="p-2 hover:bg-surface-tertiary rounded-full transition-colors text-text-tertiary hover:text-black"
               >
@@ -87,24 +100,14 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
               {/* Client Info Section */}
               <section className="space-y-4">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-tertiary flex items-center gap-2">
-                  <User size={12} /> Client Information
+                  <User size={12} /> {t.modals.clientInfo}
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-surface-secondaryp-6 rounded-2xl border border-border">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-surface-secondary p-6 rounded-2xl border border-border">
                   <div className="space-y-3">
-                    <p className="text-sm font-bold text-text-primary">{job.client}</p>
+                    <p className="text-sm font-bold text-text-primary">{job.client_name || t.modals.unassigned}</p>
                     <div className="flex items-start gap-2 text-xs text-text-secondary">
                       <MapPin size={14} className="mt-0.5 text-text-tertiary" />
-                      <span>{job.address || 'No address provided'}</span>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-xs text-text-secondary">
-                      <Phone size={14} className="text-text-tertiary" />
-                      <span>{job.phone || 'No phone provided'}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-text-secondary">
-                      <Mail size={14} className="text-text-tertiary" />
-                      <span>{job.email || 'No email provided'}</span>
+                      <span>{jobAddress || t.modals.noAddress}</span>
                     </div>
                   </div>
                 </div>
@@ -113,24 +116,28 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
               {/* Schedule & Team Section */}
               <section className="space-y-4">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-tertiary flex items-center gap-2">
-                  <Calendar size={12} /> Schedule & Assignment
+                  <Calendar size={12} /> {t.modals.scheduleAssignment}
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="bg-surface border border-border p-4 rounded-2xl shadow-sm">
-                    <p className="text-[10px] font-bold text-text-tertiary uppercase tracking-widest mb-1">Date</p>
-                    <p className="text-sm font-bold text-text-primary">{format(new Date(job.startDate), 'EEEE, MMM d, yyyy')}</p>
+                    <p className="text-[10px] font-bold text-text-tertiary uppercase tracking-widest mb-1">{t.modals.date}</p>
+                    <p className="text-sm font-bold text-text-primary">
+                      {scheduledDate ? format(scheduledDate, 'EEEE, MMM d, yyyy') : 'Not scheduled'}
+                    </p>
                   </div>
                   <div className="bg-surface border border-border p-4 rounded-2xl shadow-sm">
-                    <p className="text-[10px] font-bold text-text-tertiary uppercase tracking-widest mb-1">Time Window</p>
-                    <p className="text-sm font-bold text-text-primary">{job.startTime} - {job.endTime}</p>
+                    <p className="text-[10px] font-bold text-text-tertiary uppercase tracking-widest mb-1">{t.modals.timeWindow}</p>
+                    <p className="text-sm font-bold text-text-primary">
+                      {scheduledDate ? format(scheduledDate, 'HH:mm') : '--:--'} - {endDate ? format(endDate, 'HH:mm') : '--:--'}
+                    </p>
                   </div>
                   <div className="bg-surface border border-border p-4 rounded-2xl shadow-sm">
-                    <p className="text-[10px] font-bold text-text-tertiary uppercase tracking-widest mb-1">Assigned Team</p>
+                    <p className="text-[10px] font-bold text-text-tertiary uppercase tracking-widest mb-1">{t.modals.assignedTeam}</p>
                     <div className="flex items-center gap-2">
                       <div className="w-5 h-5 rounded-full bg-black flex items-center justify-center">
                         <Users size={10} className="text-white" />
                       </div>
-                      <p className="text-sm font-bold text-text-primary">{job.assignedTeam || 'Unassigned'}</p>
+                      <p className="text-sm font-bold text-text-primary">{job.team_id ? 'Assigned' : t.modals.unassigned}</p>
                     </div>
                   </div>
                 </div>
@@ -140,21 +147,21 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
               <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
                 <section className="space-y-4">
                   <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-tertiary flex items-center gap-2">
-                    <DollarSign size={12} /> Financials
+                    <DollarSign size={12} /> {t.modals.financials}
                   </h3>
                   <div className="bg-black p-6 rounded-2xl shadow-xl">
-                    <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest mb-1">Total Job Value</p>
-                    <p className="text-3xl font-bold text-white">{formatCurrency(job.value || 0)}</p>
+                    <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest mb-1">{t.modals.totalJobValue}</p>
+                    <p className="text-3xl font-bold text-white">{formatCurrency((job.total_cents || 0) / 100)}</p>
                   </div>
                 </section>
 
                 <section className="space-y-4">
                   <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-tertiary flex items-center gap-2">
-                    <FileText size={12} /> Internal Notes
+                    <FileText size={12} /> {t.modals.internalNotes}
                   </h3>
                   <div className="bg-warning-light/50 border border-warning p-6 rounded-2xl min-h-[100px]">
                     <p className="text-xs text-text-secondary leading-relaxed italic">
-                      {job.notes || job.description || "No notes provided for this job."}
+                      {job.notes || job.description || t.modals.noNotesProvided}
                     </p>
                   </div>
                 </section>
@@ -163,23 +170,25 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
               {/* Line Items */}
               <section className="space-y-4">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-tertiary flex items-center gap-2">
-                  <Briefcase size={12} /> Services Included
+                  <Briefcase size={12} /> {t.modals.servicesIncluded}
                 </h3>
                 <div className="border border-border rounded-2xl overflow-hidden">
-                  {Array.isArray(job.lineItems) && job.lineItems.length > 0 ? (
+                  {lineItems.length > 0 ? (
                     <table className="w-full text-left text-sm">
-                      <thead className="bg-surface-secondaryborder-b border-border">
+                      <thead className="bg-surface-secondary border-b border-border">
                         <tr>
-                          <th className="px-6 py-3 font-bold text-text-secondary uppercase tracking-widest text-[10px]">Service</th>
-                          <th className="px-6 py-3 font-bold text-text-secondary uppercase tracking-widest text-[10px] text-right">Amount</th>
+                          <th className="px-6 py-3 font-bold text-text-secondary uppercase tracking-widest text-[10px]">{t.modals.service}</th>
+                          <th className="px-6 py-3 font-bold text-text-secondary uppercase tracking-widest text-[10px] text-center">Qty</th>
+                          <th className="px-6 py-3 font-bold text-text-secondary uppercase tracking-widest text-[10px] text-right">{t.payments.amount}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {job.lineItems.map((item: any) => (
-                          <tr key={item.id || item.name}>
+                        {lineItems.map((item) => (
+                          <tr key={item.id}>
                             <td className="px-6 py-4 font-medium text-text-primary">{item.name || 'Unnamed item'}</td>
+                            <td className="px-6 py-4 text-center text-text-secondary">{item.qty}</td>
                             <td className="px-6 py-4 text-right font-bold text-text-primary">
-                              {formatCurrency((item.quantity || 1) * (item.unitPrice || 0))}
+                              {formatCurrency(item.total_cents / 100)}
                             </td>
                           </tr>
                         ))}
@@ -187,7 +196,7 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
                     </table>
                   ) : (
                     <div className="px-6 py-5 text-xs font-medium text-text-tertiary">
-                      No services or products listed for this job.
+                      {t.modals.noServicesListed}
                     </div>
                   )}
                 </div>
@@ -196,27 +205,27 @@ export default function JobDetailsModal({ isOpen, onClose, onEdit, onDelete, job
 
             {/* Footer Action Bar */}
             <div className="p-8 border-t border-border flex justify-between items-center bg-surface-secondary/50">
-              <button 
+              <button
                 onClick={handleDelete}
                 className="flex items-center gap-2 text-danger hover:text-danger text-sm font-bold transition-all px-4 py-2 rounded-xl hover:bg-danger-light"
               >
-                <Trash2 size={18} /> Delete Job
+                <Trash2 size={18} /> {t.modals.deleteJob}
               </button>
               <div className="flex items-center gap-4">
-                <button 
+                <button
                   onClick={onClose}
                   className="px-6 py-3 text-sm font-bold text-text-secondary hover:text-black transition-all"
                 >
-                  Close
+                  {t.common.close}
                 </button>
-                <button 
+                <button
                   onClick={() => {
                     onClose();
                     onEdit();
                   }}
                   className="bg-black text-white hover:bg-text-primary px-8 py-3 text-sm font-bold rounded-2xl flex items-center gap-2 transition-all shadow-xl hover:-translate-y-0.5"
                 >
-                  <Edit2 size={18} /> Edit Job
+                  <Edit2 size={18} /> {t.modals.editJob}
                 </button>
               </div>
             </div>

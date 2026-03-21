@@ -1,4 +1,5 @@
-export type LeadStatus = 'Lead' | 'Qualified' | 'Proposal' | 'Negotiation' | 'Closed';
+/** DB-aligned lead status slugs */
+export type LeadStatus = 'new' | 'follow_up_1' | 'follow_up_2' | 'follow_up_3' | 'closed' | 'lost';
 
 export interface Lead {
   id: string;
@@ -16,17 +17,17 @@ export interface Lead {
   source?: string;
   value?: number;
   status: LeadStatus | string;
+  stage?: string | null;
   tags?: string[];
   user_id?: string;
   assigned_to?: string | null;
   notes?: string | null;
+  client_id?: string | null;
   converted_to_client_id?: string | null;
+  converted_job_id?: string | null;
+  converted_at?: string | null;
   deleted_at?: string | null;
-  schedule?: {
-    start_date: string;
-    start_time: string;
-    end_time: string;
-  } | null;
+  schedule?: Record<string, any> | null;
   assigned_team?: string | null;
   line_items?: Array<Record<string, any>> | null;
   description?: string | null;
@@ -50,29 +51,41 @@ export interface Profile {
   company_name?: string;
 }
 
+/** DB-aligned job status values */
+export type JobDbStatus = 'draft' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+
+/** Display-only status labels (derived from DB status + business rules) */
 export type JobStatus =
+  | 'Draft'
+  | 'Scheduled'
+  | 'In Progress'
+  | 'Completed'
+  | 'Cancelled'
   | 'Late'
   | 'Unscheduled'
   | 'Requires Invoicing'
   | 'Action Required'
-  | 'Ending within 30 days'
-  | 'Scheduled'
-  | 'Completed';
+  | 'Ending within 30 days';
 
 export interface Job {
   id: string;
   org_id: string;
+  created_by?: string;
   lead_id?: string | null;
   job_number: string;
   title: string;
+  description?: string | null;
   client_id?: string | null;
   team_id?: string | null;
   client_name?: string | null;
-  property_address: string;
+  address?: string | null;
+  property_address?: string | null;
   scheduled_at?: string | null;
+  start_at?: string | null;
   end_at?: string | null;
   status: JobStatus | string;
   total_cents: number;
+  total_amount?: number;
   currency: string;
   subtotal?: number;
   tax_total?: number;
@@ -89,6 +102,9 @@ export interface Job {
   geocoded_at?: string | null;
   invoice_url?: string | null;
   attachments?: Array<{ name: string; url: string }> | null;
+  completed_at?: string | null;
+  closed_at?: string | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -118,4 +134,68 @@ export interface Payment {
   created_at: string;
   updated_at?: string;
   deleted_at: string | null;
+  payment_request_id?: string | null;
+  stripe_charge_id?: string | null;
+  stripe_transfer_id?: string | null;
+  stripe_balance_transaction_id?: string | null;
+  application_fee_amount?: number | null;
+  stripe_fee_amount?: number | null;
+  net_amount?: number | null;
+  paid_at?: string | null;
+  failure_reason?: string | null;
+}
+
+// ── Stripe Connect ──
+
+export type ConnectedAccountType = 'express' | 'standard' | 'custom';
+
+export interface ConnectedAccount {
+  id: string;
+  org_id: string;
+  stripe_account_id: string;
+  account_type: ConnectedAccountType;
+  onboarding_complete: boolean;
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+  details_submitted: boolean;
+  country: string | null;
+  default_currency: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Payment Requests ──
+
+export type PaymentRequestStatus = 'pending' | 'sent' | 'paid' | 'expired' | 'cancelled';
+
+export interface PaymentRequest {
+  id: string;
+  org_id: string;
+  invoice_id: string;
+  public_token: string;
+  amount_cents: number;
+  currency: string;
+  status: PaymentRequestStatus;
+  expires_at: string | null;
+  stripe_payment_intent_id: string | null;
+  payment_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Webhook Events ──
+
+export type WebhookEventStatus = 'pending' | 'processed' | 'failed' | 'skipped';
+
+export interface WebhookEvent {
+  id: string;
+  provider: 'stripe' | 'paypal';
+  stripe_event_id: string | null;
+  stripe_account_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  status: WebhookEventStatus;
+  processed_at: string | null;
+  error_message: string | null;
+  created_at: string;
 }

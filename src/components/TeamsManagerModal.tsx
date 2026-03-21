@@ -4,6 +4,7 @@ import { Palette, Plus, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { createTeam, listTeams, softDeleteTeam, updateTeam } from '../lib/teamsApi';
+import { useTranslation } from '../i18n';
 
 interface TeamsManagerModalProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ function normalizeColorHex(raw: string) {
 
 export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModalProps) {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamColor, setNewTeamColor] = useState(DEFAULT_TEAM_COLOR);
   const [drafts, setDrafts] = useState<Record<string, TeamDraft>>({});
@@ -55,10 +57,10 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
       setNewTeamName('');
       setNewTeamColor(DEFAULT_TEAM_COLOR);
       await queryClient.invalidateQueries({ queryKey: ['teams'] });
-      toast.success('Team created');
+      toast.success(t.modals.teamCreated);
     },
     onError: (error: any) => {
-      toast.error(error?.message || 'Could not create team');
+      toast.error(error?.message || t.modals.couldNotCreateTeam);
     },
   });
 
@@ -67,10 +69,12 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
       updateTeam(teamId, payload),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['teams'] });
-      toast.success('Team updated');
+      await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] });
+      await queryClient.invalidateQueries({ queryKey: ['calendarUnscheduledJobs'] });
+      toast.success(t.modals.teamUpdated);
     },
     onError: (error: any) => {
-      toast.error(error?.message || 'Could not update team');
+      toast.error(error?.message || t.modals.couldNotUpdateTeam);
     },
   });
 
@@ -80,10 +84,10 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
       await queryClient.invalidateQueries({ queryKey: ['teams'] });
       await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] });
       await queryClient.invalidateQueries({ queryKey: ['calendarUnscheduledJobs'] });
-      toast.success('Team deleted');
+      toast.success(t.modals.teamDeleted);
     },
     onError: (error: any) => {
-      toast.error(error?.message || 'Could not delete team');
+      toast.error(error?.message || t.modals.couldNotDeleteTeam);
     },
   });
 
@@ -95,7 +99,7 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
   async function handleCreateTeam() {
     const name = newTeamName.trim();
     if (!name) {
-      toast.error('Team name is required');
+      toast.error(t.modals.teamNameRequired);
       return;
     }
     await createMutation.mutateAsync({
@@ -109,7 +113,7 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
     if (!draft) return;
     const name = draft.name.trim();
     if (!name) {
-      toast.error('Team name is required');
+      toast.error(t.modals.teamNameRequired);
       return;
     }
     await updateMutation.mutateAsync({
@@ -122,7 +126,7 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
   }
 
   async function handleDeleteTeam(teamId: string, teamName: string) {
-    if (!window.confirm(`Delete team "${teamName}"? Jobs and events will become unassigned.`)) return;
+    if (!window.confirm(t.modals.deleteTeamConfirm.replace('{name}', teamName))) return;
     await deleteMutation.mutateAsync(teamId);
   }
 
@@ -138,8 +142,8 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight text-text-primary">Teams Manager</h2>
-                <p className="text-xs text-text-secondary">Create, edit, and soft-delete teams.</p>
+                <h2 className="text-2xl font-semibold tracking-tight text-text-primary">{t.modals.teamsManager}</h2>
+                <p className="text-xs text-text-secondary">{t.modals.teamsManagerDesc}</p>
               </div>
               <button type="button" onClick={onClose} className="glass-button !p-2">
                 <X size={15} />
@@ -148,12 +152,12 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
 
             <div className="space-y-5 px-5 py-4">
               <section className="rounded-xl border border-border bg-white/70 p-3">
-                <h3 className="mb-3 text-sm font-semibold text-text-primary">Add team</h3>
+                <h3 className="mb-3 text-sm font-semibold text-text-primary">{t.modals.addTeam}</h3>
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_170px_auto]">
                   <input
                     value={newTeamName}
                     onChange={(event) => setNewTeamName(event.target.value)}
-                    placeholder="Team name"
+                    placeholder={t.modals.teamName}
                     className="glass-input w-full"
                   />
                   <label className="glass-input flex items-center gap-2">
@@ -173,16 +177,16 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
                     className="glass-button-primary inline-flex items-center justify-center gap-2"
                   >
                     <Plus size={14} />
-                    Add team
+                    {t.modals.addTeam}
                   </button>
                 </div>
               </section>
 
               <section className="rounded-xl border border-border bg-white/70 p-3">
-                <h3 className="mb-3 text-sm font-semibold text-text-primary">Existing teams</h3>
+                <h3 className="mb-3 text-sm font-semibold text-text-primary">{t.modals.existingTeams}</h3>
 
-                {teamsQuery.isLoading ? <p className="text-sm text-text-secondary">Loading teams...</p> : null}
-                {teamsQuery.isError ? <p className="text-sm text-danger">Could not load teams.</p> : null}
+                {teamsQuery.isLoading ? <p className="text-sm text-text-secondary">{t.modals.loadingTeams}</p> : null}
+                {teamsQuery.isError ? <p className="text-sm text-danger">{t.modals.couldNotLoadTeams}</p> : null}
 
                 <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
                   {teams.map((team) => {
@@ -220,7 +224,7 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
                           disabled={isBusy}
                           className="glass-button !px-3"
                         >
-                          Save
+                          {t.common.save}
                         </button>
                         <button
                           type="button"
@@ -235,7 +239,7 @@ export default function TeamsManagerModal({ isOpen, onClose }: TeamsManagerModal
                   })}
 
                   {!teamsQuery.isLoading && teams.length === 0 ? (
-                    <p className="text-sm text-text-secondary">No teams created yet.</p>
+                    <p className="text-sm text-text-secondary">{t.modals.noTeamsYet}</p>
                   ) : null}
                 </div>
               </section>

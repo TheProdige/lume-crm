@@ -15,14 +15,8 @@ export function mapLeadToJobDraft(deal: PipelineDeal): JobDraftInitialValues {
   const leadRef = deal.lead_id ? `From Lead #${deal.lead_id}` : 'From Pipeline';
 
   const notes = compact([
-    leadRef,
-    leadName ? `Lead: ${leadName}` : null,
-    deal.lead?.email ? `Email: ${deal.lead.email}` : null,
-    deal.lead?.phone ? `Phone: ${deal.lead.phone}` : null,
-    deal.lead?.company ? `Company: ${deal.lead.company}` : null,
-    deal.id ? `Pipeline deal: ${deal.id}` : null,
-    deal.notes ? `Deal notes: ${deal.notes}` : null,
-    deal.lead?.notes ? `Lead notes: ${deal.lead.notes}` : null,
+    deal.notes || null,
+    deal.lead?.notes || null,
   ]);
 
   return {

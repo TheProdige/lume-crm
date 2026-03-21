@@ -10,6 +10,7 @@ import {
   resolveDateInput,
 } from '../lib/searchParsing';
 import { escapeRegExp, getSearchEntityLabel, getSearchItemHref } from '../lib/searchHelpers';
+import { useTranslation } from '../i18n';
 
 type SuggestionAction = {
   id: string;
@@ -59,6 +60,7 @@ function getItemIcon(item: SuggestionAction) {
 }
 
 export default function GlobalSearch() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const listboxId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -126,7 +128,7 @@ export default function GlobalSearch() {
       items.push({
         id: `date-${parsedDate.isoDate}`,
         kind: 'date',
-        label: `Open calendar on ${parsedDate.label}`,
+        label: `${t.globalSearch.openCalendarOn} ${parsedDate.label}`,
         subtitle: parsedDate.source,
         destination: `/calendar?date=${encodeURIComponent(parsedDate.isoDate)}`,
       });
@@ -160,7 +162,7 @@ export default function GlobalSearch() {
       items.push({
         id: 'see-all',
         kind: 'see_all',
-        label: `See all results for "${normalizedQuery}"`,
+        label: `${t.globalSearch.seeAllResults} "${normalizedQuery}"`,
         destination: `/search?q=${encodeURIComponent(normalizedQuery)}&tab=all`,
       });
     }
@@ -296,7 +298,7 @@ export default function GlobalSearch() {
         }}
         onFocus={handleFocus}
         onKeyDown={handleKeyDown}
-        placeholder="Search Lume... (clients, jobs, dates, commands)"
+        placeholder={t.globalSearch.placeholder}
         className="glass-input w-full pl-10"
         aria-label="Global search"
         role="combobox"
@@ -314,17 +316,17 @@ export default function GlobalSearch() {
           role="listbox"
           className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 max-h-[420px] overflow-y-auto rounded-lg border border-border bg-surface p-3 shadow-xl"
         >
-          {loading ? <p className="px-2 py-1 text-sm text-text-secondary">Searching...</p> : null}
+          {loading ? <p className="px-2 py-1 text-sm text-text-secondary">{t.globalSearch.searching}</p> : null}
 
           {!loading && actionItems.length === 0 && optionItems.length === 0 && !seeAllItem ? (
-            <p className="px-2 py-1 text-sm text-text-secondary">No suggestions.</p>
+            <p className="px-2 py-1 text-sm text-text-secondary">{t.globalSearch.noSuggestions}</p>
           ) : null}
 
           {!loading ? (
             <div className="space-y-3">
               {actionItems.length > 0 ? (
                 <div>
-                  <p className="px-2 pb-1 text-[10px] uppercase tracking-widest text-text-tertiary">Quick Actions</p>
+                  <p className="px-2 pb-1 text-[10px] uppercase tracking-widest text-text-tertiary">{t.globalSearch.quickActions}</p>
                   <div className="space-y-1">
                     {actionItems.map((item) => {
                       const optionIndex = optionItems.findIndex((row) => row.id === item.id);
@@ -371,7 +373,7 @@ export default function GlobalSearch() {
                 return (
                   <div key={groupKey}>
                     <p className="px-2 pb-1 text-[10px] uppercase tracking-widest text-text-tertiary">
-                      {getSearchEntityLabel(groupKey === 'clients' ? 'client' : groupKey === 'jobs' ? 'job' : 'lead')}
+                      {{ clients: t.globalSearch.clients, jobs: t.globalSearch.jobs, leads: t.globalSearch.leads }[groupKey]}
                     </p>
                     <div className="space-y-1">
                       {groupItems.map((item) => {

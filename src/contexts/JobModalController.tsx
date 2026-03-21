@@ -1,9 +1,10 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import NewJobModal, { JobDraftInitialValues, JobModalSourceContext } from '../components/NewJobModal';
 import InvoicePreviewModal from '../components/InvoicePreviewModal';
-import { createJob, getJobModalDraftById, updateJob } from '../lib/jobsApi';
+import { createJob, getJobModalDraftById, updateJob, softDeleteJob } from '../lib/jobsApi';
 import { geocodeJob } from '../lib/geocodeApi';
 import { finishJobAndPrepareInvoice } from '../lib/invoicesApi';
 import { Job } from '../types';
@@ -28,6 +29,7 @@ const JobModalControllerContext = createContext<JobModalControllerValue | null>(
 
 export function JobModalControllerProvider({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = useState(false);
   const [initialValues, setInitialValues] = useState<JobDraftInitialValues | null>(null);
   const [sourceContext, setSourceContext] = useState<JobModalSourceContext | null>(null);
@@ -35,6 +37,7 @@ export function JobModalControllerProvider({ children }: { children: React.React
   const [onCancelCallback, setOnCancelCallback] = useState<OpenJobModalParams['onCancel'] | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isFinishingJob, setIsFinishingJob] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [previewInvoiceId, setPreviewInvoiceId] = useState<string | null>(null);
   const [isInvoicePreviewOpen, setIsInvoicePreviewOpen] = useState(false);
@@ -88,6 +91,12 @@ export function JobModalControllerProvider({ children }: { children: React.React
         throw new Error('Job save failed: missing persisted id.');
       }
       void geocodeJob(created.id).catch(() => undefined);
+      // Invalidate schedule/jobs queries so calendar and job lists stay in sync
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['calendarEvents'] }),
+        queryClient.invalidateQueries({ queryKey: ['calendarUnscheduledJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['jobsTable'] }),
+      ]);
       toast.success(payload.id ? 'Job updated' : 'Job created');
       return created;
     } catch (error: any) {
@@ -98,19 +107,18 @@ export function JobModalControllerProvider({ children }: { children: React.React
     } finally {
       setIsSaving(false);
     }
-  }, []);
+  }, [queryClient]);
 
   const handleCreated = useCallback(
     async (job: Job) => {
       closeJobModal();
-      if (sourceContext?.type === 'pipeline') {
-        navigate(`/jobs/${job.id}`);
-      }
       if (onCreatedCallback) {
         await onCreatedCallback(job);
       }
+      // Always redirect to job details after save so user sees the full summary
+      navigate(`/jobs/${job.id}`);
     },
-    [closeJobModal, navigate, onCreatedCallback, sourceContext?.type]
+    [closeJobModal, navigate, onCreatedCallback]
   );
 
   const handleCancel = useCallback(() => {
@@ -140,6 +148,8 @@ export function JobModalControllerProvider({ children }: { children: React.React
         if (!result?.invoice_id) {
           throw new Error('Invoice id missing after finishing job.');
         }
+        // Invalidate schedule queries after status change
+        void queryClient.invalidateQueries({ queryKey: ['calendarEvents'] });
         setPreviewInvoiceId(result.invoice_id);
         setIsInvoicePreviewOpen(true);
         toast.success(result.already_exists ? 'Job completed. Existing invoice loaded.' : 'Job completed. Invoice draft created.');
@@ -150,6 +160,29 @@ export function JobModalControllerProvider({ children }: { children: React.React
       }
     },
     []
+  );
+
+  const handleDelete = useCallback(
+    async (jobId: string) => {
+      setIsDeleting(true);
+      try {
+        await softDeleteJob(jobId);
+        // Invalidate schedule/jobs queries after deletion
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['calendarEvents'] }),
+          queryClient.invalidateQueries({ queryKey: ['calendarUnscheduledJobs'] }),
+          queryClient.invalidateQueries({ queryKey: ['jobsTable'] }),
+        ]);
+        toast.success('Job deleted');
+        closeJobModal();
+        onCreatedCallback?.(undefined as any); // trigger list refresh
+      } catch (error: any) {
+        toast.error(error?.message || 'Unable to delete job.');
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    [closeJobModal, onCreatedCallback, queryClient]
   );
 
   const value = useMemo<JobModalControllerValue>(
@@ -178,6 +211,8 @@ export function JobModalControllerProvider({ children }: { children: React.React
         isFinishingJob={isFinishingJob}
         onCreated={(job) => void handleCreated(job)}
         onCancel={handleCancel}
+        onDelete={handleDelete}
+        isDeleting={isDeleting}
       />
       <InvoicePreviewModal
         isOpen={isInvoicePreviewOpen}

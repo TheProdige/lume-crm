@@ -1,9 +1,43 @@
 ﻿import { supabase } from './supabase';
 import { getCurrentOrgIdOrThrow } from './orgApi';
 
-export const PIPELINE_STAGES = ['Qualified', 'Contact', 'Quote Sent', 'Closed', 'Lost'] as const;
+/** Convert a display-label stage to its DB slug */
+export function stageToDbSlug(stage: string): string {
+  const raw = String(stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const map: Record<string, string> = {
+    new: 'new',
+    'follow_up_1': 'follow_up_1',
+    'follow_up_2': 'follow_up_2',
+    'follow_up_3': 'follow_up_3',
+    closed: 'closed',
+    lost: 'lost',
+  };
+  return map[raw] || 'new';
+}
+
+export const PIPELINE_STAGES = ['New', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Closed', 'Lost'] as const;
 export type PipelineStageName = (typeof PIPELINE_STAGES)[number];
 export const TRIGGER_STAGE = 'closed' as const;
+
+/** DB slug → display label */
+export const STAGE_LABEL_MAP: Record<string, PipelineStageName> = {
+  new: 'New',
+  follow_up_1: 'Follow-up 1',
+  follow_up_2: 'Follow-up 2',
+  follow_up_3: 'Follow-up 3',
+  closed: 'Closed',
+  lost: 'Lost',
+};
+
+/** Display label → DB slug */
+export const STAGE_DB_MAP: Record<string, string> = {
+  'New': 'new',
+  'Follow-up 1': 'follow_up_1',
+  'Follow-up 2': 'follow_up_2',
+  'Follow-up 3': 'follow_up_3',
+  'Closed': 'closed',
+  'Lost': 'lost',
+};
 export const ALLOW_CREATE_ANOTHER_JOB = false;
 
 export interface PipelineDeal {
@@ -16,6 +50,7 @@ export interface PipelineDeal {
   title: string;
   notes: string | null;
   lost_at?: string | null;
+  won_at?: string | null;
   deleted_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -98,13 +133,25 @@ export interface IntentLeadPrefill {
 }
 
 function normalizeStage(value: string): PipelineStageName {
-  const raw = String(value || '').trim().toLowerCase();
-  if (raw === 'qualified') return 'Qualified';
-  if (raw === 'contact') return 'Contact';
-  if (raw === 'quote sent') return 'Quote Sent';
-  if (raw === 'closed') return 'Closed';
-  if (raw === 'lost') return 'Lost';
-  return 'Qualified';
+  const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const map: Record<string, PipelineStageName> = {
+    new: 'New',
+    follow_up_1: 'Follow-up 1',
+    follow_up_2: 'Follow-up 2',
+    follow_up_3: 'Follow-up 3',
+    closed: 'Closed',
+    lost: 'Lost',
+    // Legacy → new mapping
+    contacted: 'Follow-up 1',
+    contact: 'Follow-up 1',
+    estimate_sent: 'Follow-up 2',
+    quote_sent: 'Follow-up 2',
+    follow_up: 'Follow-up 1',
+    won: 'Closed',
+    qualified: 'New',
+    archived: 'Lost',
+  };
+  return map[raw] || 'New';
 }
 
 function mapDeal(row: any): PipelineDeal {
@@ -118,6 +165,7 @@ function mapDeal(row: any): PipelineDeal {
     title: row.title || 'Untitled deal',
     notes: row.notes || null,
     lost_at: row.lost_at || null,
+    won_at: row.won_at || null,
     deleted_at: row.deleted_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -172,11 +220,14 @@ function mapDeal(row: any): PipelineDeal {
 }
 
 export async function listPipelineDeals(): Promise<PipelineDeal[]> {
+  // Use pipeline_deals_visible view as single source of truth.
+  // This view filters out: soft-deleted deals, orphaned leads/clients,
+  // WON deals older than 2 days, LOST deals older than 15 days.
   const { data, error } = await supabase
-    .from('pipeline_deals')
+    .from('pipeline_deals_visible')
     .select(
       `
-        id,lead_id,client_id,job_id,stage,value,title,notes,lost_at,deleted_at,created_at,updated_at,
+        id,lead_id,client_id,job_id,stage,value,title,notes,lost_at,won_at,deleted_at,created_at,updated_at,
         lead:leads!pipeline_deals_lead_id_fkey(
           id,first_name,last_name,email,phone,address,company,title,notes,tags,
           contact:contacts!leads_contact_id_fkey(id,full_name,email,phone)
@@ -188,7 +239,6 @@ export async function listPipelineDeals(): Promise<PipelineDeal[]> {
         job:jobs!pipeline_deals_job_id_fkey(id,title,status,team_id)
       `
     )
-    .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -197,10 +247,10 @@ export async function listPipelineDeals(): Promise<PipelineDeal[]> {
 
 export async function getPipelineDealById(id: string): Promise<PipelineDeal | null> {
   const { data, error } = await supabase
-    .from('pipeline_deals')
+    .from('pipeline_deals_visible')
     .select(
       `
-        id,lead_id,client_id,job_id,stage,value,title,notes,lost_at,deleted_at,created_at,updated_at,
+        id,lead_id,client_id,job_id,stage,value,title,notes,lost_at,won_at,deleted_at,created_at,updated_at,
         lead:leads!pipeline_deals_lead_id_fkey(
           id,first_name,last_name,email,phone,address,company,title,notes,tags,
           contact:contacts!leads_contact_id_fkey(id,full_name,email,phone)
@@ -213,7 +263,6 @@ export async function getPipelineDealById(id: string): Promise<PipelineDeal | nu
       `
     )
     .eq('id', id)
-    .is('deleted_at', null)
     .single();
 
   if (error) {
@@ -236,7 +285,7 @@ export async function createDealWithJob(payload: {
     p_lead_id: payload.lead_id,
     p_title: payload.title,
     p_value: payload.value,
-    p_stage: payload.stage,
+    p_stage: stageToDbSlug(payload.stage),
     p_notes: payload.notes ?? null,
     p_pipeline_id: payload.pipeline_id ?? null,
   });
@@ -265,7 +314,7 @@ export async function updatePipelineDeal(
   if (stage !== undefined) {
     const { error: stageError } = await supabase.rpc('set_deal_stage', {
       p_deal_id: id,
-      p_stage: stage,
+      p_stage: stageToDbSlug(stage),
     });
     if (stageError) throw stageError;
   }
@@ -284,10 +333,24 @@ export async function softDeletePipelineDeal(dealId: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Server-side deal deletion using service_role (bypasses RLS). */
+export async function serverDeleteDeal(dealId: string, alsoDeleteLead = false): Promise<void> {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session.session?.access_token;
+  if (!token) throw new Error('Not authenticated.');
+  const response = await fetch('/api/deals/soft-delete', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dealId, alsoDeleteLead }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `Failed to delete deal (${response.status}).`);
+}
+
 export async function setPipelineDealStage(id: string, stage: PipelineStageName): Promise<PipelineDeal> {
   const { error } = await supabase.rpc('set_deal_stage', {
     p_deal_id: id,
-    p_stage: stage,
+    p_stage: stageToDbSlug(stage),
   });
   if (error) throw error;
   const deal = await getPipelineDealById(id);
@@ -300,53 +363,50 @@ export async function listScheduleEventsForJob(jobId: string): Promise<PipelineS
     .from('schedule_events')
     .select(
       `
-        id,job_id,start_time,end_time,notes,status,
+        id,job_id,start_at,end_at,start_time,end_time,notes,status,
         job:jobs!schedule_events_job_id_fkey(id,title,status)
       `
     )
     .eq('job_id', jobId)
     .is('deleted_at', null)
-    .order('start_time', { ascending: true })
+    .order('start_at', { ascending: true })
     .limit(8);
 
   if (error) throw error;
   return (data || []).map((row: any) => ({
     id: row.id,
     job_id: row.job_id,
-    start_time: row.start_time,
-    end_time: row.end_time,
+    start_time: row.start_at || row.start_time,
+    end_time: row.end_at || row.end_time,
     notes: row.notes || null,
     status: row.status || null,
   }));
 }
 
 export async function createQuickScheduleEvent(jobId: string): Promise<PipelineScheduleEvent> {
-  const orgId = await getCurrentOrgIdOrThrow();
   const start = new Date();
   start.setMinutes(0, 0, 0);
   const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Toronto';
 
-  const { data, error } = await supabase
-    .from('schedule_events')
-    .insert({
-      org_id: orgId,
-      job_id: jobId,
-      start_time: start.toISOString(),
-      end_time: end.toISOString(),
-      status: 'scheduled',
-      notes: null,
-    })
-    .select('id,job_id,start_time,end_time,notes,status')
-    .single();
+  // Use RPC to properly update both schedule_events AND jobs.scheduled_at/status
+  const { data, error } = await supabase.rpc('rpc_schedule_job', {
+    p_job_id: jobId,
+    p_start_at: start.toISOString(),
+    p_end_at: end.toISOString(),
+    p_team_id: null,
+    p_timezone: tz,
+  });
 
   if (error) throw error;
+  const event = (data as any)?.event || data;
   return {
-    id: data.id,
-    job_id: data.job_id,
-    start_time: data.start_time,
-    end_time: data.end_time,
-    notes: data.notes || null,
-    status: data.status || null,
+    id: String(event.id),
+    job_id: String(event.job_id),
+    start_time: String(event.start_at || event.start_time),
+    end_time: String(event.end_at || event.end_time),
+    notes: event.notes || null,
+    status: event.status || null,
   };
 }
 
@@ -477,7 +537,7 @@ export async function getPendingIntentByLeadId(leadId: string): Promise<JobInten
 
 export async function getLeadPrefillForIntent(intent: JobIntent): Promise<IntentLeadPrefill> {
   const { data, error } = await supabase
-    .from('leads')
+    .from('leads_active')
     .select('id,first_name,last_name,email,phone,address,notes,schedule,company,title')
     .eq('id', intent.lead_id)
     .single();

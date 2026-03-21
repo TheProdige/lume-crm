@@ -1,6 +1,10 @@
 import { supabase } from './supabase';
 import { Job } from '../types';
 import type { JobDraftInitialValues } from '../components/NewJobModal';
+import { calculateJobFinancials, type CalcLineItem, type TaxLine } from './jobCalc';
+import { resolveClientIdForLead } from './leadsApi';
+import { emitJobCompleted } from './automationEventsApi';
+import { invalidateScheduleCache } from './scheduleApi';
 
 export type JobSort = 'client' | 'job_number' | 'schedule' | 'status' | 'total';
 export type JobSortDirection = 'asc' | 'desc';
@@ -37,6 +41,7 @@ export interface JobLineItemInput {
   name: string;
   qty: number;
   unit_price_cents: number;
+  included?: boolean;
 }
 
 export interface SalespersonOption {
@@ -57,7 +62,7 @@ const SORT_MAP: Record<JobSort, string> = {
   job_number: 'job_number',
   schedule: 'scheduled_at',
   status: 'status',
-  total: 'total_amount',
+  total: 'total_cents',
 };
 
 const isDev = import.meta.env.DEV;
@@ -133,7 +138,7 @@ async function syncJobSchedule(payload: {
       p_start_at: payload.scheduledAt,
       p_end_at: payload.endAt,
       p_team_id: payload.teamId ?? null,
-      p_timezone: 'America/Montreal',
+      p_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Montreal',
     });
     devLogJobWrite('rpc_schedule_job_response', {
       job_id: payload.jobId,
@@ -324,16 +329,16 @@ export async function getJobModalDraftById(id: string): Promise<JobModalDraft | 
   if (jobError) throw jobError;
   if (!jobRow) return null;
 
-  let lineItems: Array<{ name: string; qty: number; unit_price_cents: number }> = [];
+  let lineItems: Array<{ name: string; qty: number; unit_price_cents: number; included?: boolean }> = [];
   const { data: lineItemsData, error: lineItemsError } = await supabase
     .from('job_line_items')
-    .select('name,qty,unit_price_cents')
+    .select('name,qty,unit_price_cents,included')
     .eq('job_id', id)
     .order('created_at', { ascending: true });
   if (lineItemsError) {
     if (!isMissingJobLineItemsTableError(lineItemsError)) throw lineItemsError;
   } else {
-    lineItems = (lineItemsData || []) as Array<{ name: string; qty: number; unit_price_cents: number }>;
+    lineItems = (lineItemsData || []) as Array<{ name: string; qty: number; unit_price_cents: number; included?: boolean }>;
   }
 
   return {
@@ -360,6 +365,7 @@ export async function getJobModalDraftById(id: string): Promise<JobModalDraft | 
       name: row.name,
       qty: Number(row.qty || 1),
       unit_price_cents: Number(row.unit_price_cents || 0),
+      included: row.included !== false,
     })),
   };
 }
@@ -394,6 +400,14 @@ export async function createJob(payload: {
   const orgId = String(orgIdData || '').trim();
   if (!orgId) {
     throw new Error('Cannot save job: organization context is missing. Please refresh and try again.');
+  }
+
+  // Auto-resolve client_id from lead_id if not provided
+  if (payload.lead_id && !payload.client_id) {
+    const resolvedClientId = await resolveClientIdForLead(payload.lead_id);
+    if (resolvedClientId) {
+      payload.client_id = resolvedClientId;
+    }
   }
 
   devLogJobWrite('submit_payload', {
@@ -437,14 +451,14 @@ export async function createJob(payload: {
     const nextAddress = payload.property_address || clientAddress || '-';
     shouldQueueGeocode = normalizeAddressValue(existingJob?.property_address) !== normalizeAddressValue(nextAddress);
 
-    const upsertPayload: Record<string, any> = {
-      id: payload.id,
+    const updatePayload: Record<string, any> = {
       title: payload.title,
       lead_id: payload.lead_id || null,
       job_number: payload.job_number || null,
       notes: payload.description || null,
       job_type: payload.job_type || null,
       property_address: nextAddress,
+      address: nextAddress,
       scheduled_at: payload.scheduled_at || null,
       end_at: payload.end_at || null,
       status: normalizeStatusValue(payload.status || 'scheduled'),
@@ -461,29 +475,31 @@ export async function createJob(payload: {
       tax_total: payload.tax_total ?? 0,
       total: payload.total ?? Number((payload.total_cents || 0) / 100),
       tax_lines: payload.tax_lines ?? [],
+      updated_at: new Date().toISOString(),
     };
 
     if (shouldQueueGeocode) {
-      upsertPayload.geocode_status = 'pending';
-      upsertPayload.geocoded_at = null;
-      upsertPayload.latitude = null;
-      upsertPayload.longitude = null;
+      updatePayload.geocode_status = 'pending';
+      updatePayload.geocoded_at = null;
+      updatePayload.latitude = null;
+      updatePayload.longitude = null;
     }
 
-    const { data: upserted, error, status } = await supabase
+    const { data: updated, error, status } = await supabase
       .from('jobs')
-      .upsert(upsertPayload, { onConflict: 'id' })
+      .update(updatePayload)
+      .eq('id', payload.id)
       .select('*')
       .single();
-    devLogJobWrite('upsert_jobs_response', {
+    devLogJobWrite('update_jobs_response', {
       org_id: orgId,
       status,
       error: error ? { code: error.code, message: error.message } : null,
-      data_id: upserted?.id || null,
+      data_id: updated?.id || null,
     });
     if (error) throw error;
-    if (!upserted?.id) throw new Error('Job save failed: no id returned from database.');
-    data = upserted;
+    if (!updated?.id) throw new Error('Job save failed: no id returned from database.');
+    data = updated;
   } else {
     const { data: rpcData, error: rpcError, status: rpcStatus } = await supabase.rpc('rpc_create_job_with_optional_schedule', {
       p_lead_id: payload.lead_id || null,
@@ -497,7 +513,7 @@ export async function createJob(payload: {
       p_notes: payload.description || null,
       p_scheduled_at: payload.scheduled_at || null,
       p_end_at: payload.end_at || null,
-      p_timezone: 'America/Montreal',
+      p_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Montreal',
     });
     devLogJobWrite('rpc_create_job_with_optional_schedule_response', {
       org_id: orgId,
@@ -582,6 +598,7 @@ export async function createJob(payload: {
         qty: item.qty,
         unit_price_cents: item.unit_price_cents,
         total_cents: Math.max(0, Math.round(item.qty * item.unit_price_cents)),
+        included: item.included !== false,
       }));
     if (rows.length > 0) {
       const { error: itemError, status: itemStatus } = await supabase.from('job_line_items').insert(rows);
@@ -594,6 +611,47 @@ export async function createJob(payload: {
       });
       if (itemError && !isMissingJobLineItemsTableError(itemError)) throw itemError;
     }
+  }
+
+  // ── Persist financial fields on the job row ──
+  // For new jobs, the RPC doesn't accept financial params, so we update after line items are inserted.
+  // For edited jobs, the upsert already sets them, but we recalculate from inserted items for consistency.
+  {
+    const calcItems: CalcLineItem[] = (payload.line_items || [])
+      .filter((item) => item.name.trim() && item.included !== false)
+      .map((item) => ({ qty: item.qty, unit_price_cents: item.unit_price_cents }));
+    const calcTaxes: TaxLine[] = payload.tax_lines || [];
+    const financials = calculateJobFinancials(calcItems, calcTaxes);
+
+    const { error: finErr, status: finStatus } = await supabase
+      .from('jobs')
+      .update({
+        subtotal: financials.subtotal,
+        tax_total: financials.tax_amount,
+        total: financials.total,
+        total_cents: financials.total_cents,
+        total_amount: financials.total,
+        tax_lines: payload.tax_lines || [],
+      })
+      .eq('id', data.id);
+    devLogJobWrite('persist_financials', {
+      org_id: orgId,
+      job_id: data.id,
+      status: finStatus,
+      error: finErr ? { code: finErr.code, message: finErr.message } : null,
+      subtotal: financials.subtotal,
+      tax_amount: financials.tax_amount,
+      total: financials.total,
+    });
+    if (finErr) throw finErr;
+
+    // Refresh data so returned job has correct values
+    const { data: refreshedFin, error: refreshedFinErr } = await supabase
+      .from('jobs_active')
+      .select('*')
+      .eq('id', data.id)
+      .single();
+    if (!refreshedFinErr && refreshedFin) data = refreshedFin;
   }
 
   if (payload.lead_id) {
@@ -616,17 +674,18 @@ export async function createJob(payload: {
     }
   }
 
-  try {
-    await syncJobSchedule({
-      jobId: data.id,
-      teamId: data.team_id ?? payload.team_id ?? null,
-      scheduledAt: data.scheduled_at ?? payload.scheduled_at ?? null,
-      endAt: data.end_at ?? payload.end_at ?? null,
-    });
-  } catch (scheduleError: any) {
-    // Non-fatal: job is already saved, schedule sync can fail gracefully
-    console.warn('[jobs] syncJobSchedule failed (non-fatal)', scheduleError?.message);
-  }
+  // Always sync schedule — use the freshest data from DB
+  const finalScheduledAt = data.scheduled_at || payload.scheduled_at || null;
+  const finalEndAt = data.end_at || payload.end_at || null;
+  const finalTeamId = data.team_id || payload.team_id || null;
+
+  await syncJobSchedule({
+    jobId: data.id,
+    teamId: finalTeamId,
+    scheduledAt: finalScheduledAt,
+    endAt: finalEndAt,
+  });
+  invalidateScheduleCache();
 
   return mapJob(data, clientName);
 }
@@ -648,7 +707,7 @@ export async function getActiveJobByLeadId(leadId: string): Promise<Job | null> 
 export async function updateJob(
   id: string,
   payload: Partial<
-    Pick<Job, 'status' | 'scheduled_at' | 'total_cents' | 'title' | 'property_address' | 'job_type' | 'client_name' | 'notes'>
+    Pick<Job, 'status' | 'scheduled_at' | 'end_at' | 'total_cents' | 'title' | 'property_address' | 'job_type' | 'client_name' | 'notes' | 'team_id'>
   > & {
     subtotal?: number;
     tax_total?: number;
@@ -659,6 +718,8 @@ export async function updateJob(
   const updatePayload: Record<string, any> = {};
   if (payload.status !== undefined) updatePayload.status = normalizeStatusValue(String(payload.status || ''));
   if (payload.scheduled_at !== undefined) updatePayload.scheduled_at = payload.scheduled_at;
+  if (payload.end_at !== undefined) updatePayload.end_at = payload.end_at;
+  if (payload.team_id !== undefined) updatePayload.team_id = payload.team_id || null;
   if (payload.total_cents !== undefined) {
     updatePayload.total_cents = payload.total_cents;
     updatePayload.total_amount = Number(payload.total_cents || 0) / 100;
@@ -691,6 +752,28 @@ export async function updateJob(
 
   const { data, error } = await supabase.from('jobs').update(updatePayload).eq('id', id).select('*').single();
   if (error) throw error;
+
+  // Fire automation hook when job marked completed (non-blocking)
+  if (updatePayload.status === 'completed') {
+    emitJobCompleted({ jobId: id });
+  }
+
+  // Sync schedule if schedule-relevant fields were changed
+  const scheduleFieldsChanged =
+    payload.scheduled_at !== undefined ||
+    payload.end_at !== undefined ||
+    payload.team_id !== undefined;
+
+  if (scheduleFieldsChanged) {
+    await syncJobSchedule({
+      jobId: id,
+      teamId: data.team_id ?? null,
+      scheduledAt: data.scheduled_at ?? null,
+      endAt: data.end_at ?? null,
+    });
+    invalidateScheduleCache();
+  }
+
   return mapJob(data);
 }
 
@@ -748,16 +831,62 @@ export async function exportJobsCsv(query: Omit<JobsQuery, 'page' | 'pageSize'>)
   return [headers.join(','), ...lines].join('\n');
 }
 
+export interface JobLineItem {
+  id: string;
+  name: string;
+  qty: number;
+  unit_price_cents: number;
+  total_cents: number;
+  included: boolean;
+}
+
+export async function getJobLineItems(jobId: string): Promise<JobLineItem[]> {
+  const { data, error } = await supabase
+    .from('job_line_items')
+    .select('id,name,qty,unit_price_cents,total_cents,included')
+    .eq('job_id', jobId)
+    .order('created_at', { ascending: true });
+  if (error) {
+    if (isMissingJobLineItemsTableError(error)) return [];
+    throw error;
+  }
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    name: row.name || '',
+    qty: Number(row.qty || 1),
+    unit_price_cents: Number(row.unit_price_cents || 0),
+    total_cents: Number(row.total_cents || 0),
+    included: row.included !== false,
+  }));
+}
+
+export async function getJobWithLineItems(jobId: string): Promise<{ job: Job; lineItems: JobLineItem[] } | null> {
+  const job = await getJobById(jobId);
+  if (!job) return null;
+  const lineItems = await getJobLineItems(jobId);
+  return { job, lineItems };
+}
+
 export async function softDeleteJob(jobId: string): Promise<SoftDeleteJobResult> {
   const { data: orgId, error: orgError } = await supabase.rpc('current_org_id');
   if (orgError) throw orgError;
   if (!orgId) throw new Error('No organization context found.');
+
+  // Soft-delete associated schedule_events first
+  const nowIso = new Date().toISOString();
+  await supabase
+    .from('schedule_events')
+    .update({ deleted_at: nowIso, updated_at: nowIso })
+    .eq('job_id', jobId)
+    .is('deleted_at', null);
 
   const { data, error } = await supabase.rpc('soft_delete_job', {
     p_org_id: orgId,
     p_job_id: jobId,
   });
   if (error) throw error;
+
+  invalidateScheduleCache();
 
   return {
     job: Number((data as any)?.job || 0),

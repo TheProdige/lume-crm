@@ -8,6 +8,15 @@ export interface ClientRecord {
   email: string | null;
   phone: string | null;
   address: string | null;
+  street_number: string | null;
+  street_name: string | null;
+  city: string | null;
+  province: string | null;
+  postal_code: string | null;
+  country: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  place_id: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -94,15 +103,20 @@ export interface ClientPayload {
   email?: string;
   phone?: string;
   address?: string;
+  street_number?: string;
+  street_name?: string;
+  city?: string;
+  province?: string;
+  postal_code?: string;
+  country?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  place_id?: string;
   status?: string;
 }
 
-async function getCurrentOrgIdOrThrow(): Promise<string> {
-  const { data: orgId, error: orgError } = await supabase.rpc('current_org_id');
-  if (orgError) throw orgError;
-  if (!orgId) throw new Error('No organization context found.');
-  return String(orgId);
-}
+// Use the centralized version from orgApi instead of duplicating
+import { getCurrentOrgIdOrThrow } from './orgApi';
 
 export async function findClientsByEmail(email: string): Promise<ClientRecord[]> {
   const normalized = String(email || '').trim().toLowerCase();
@@ -131,6 +145,15 @@ export async function createClientWithDuplicateHandling(
       email: payload.email?.trim() || null,
       phone: payload.phone?.trim() || null,
       address: payload.address?.trim() || null,
+      street_number: payload.street_number?.trim() || null,
+      street_name: payload.street_name?.trim() || null,
+      city: payload.city?.trim() || null,
+      province: payload.province?.trim() || null,
+      postal_code: payload.postal_code?.trim() || null,
+      country: payload.country?.trim() || null,
+      latitude: payload.latitude ?? null,
+      longitude: payload.longitude ?? null,
+      place_id: payload.place_id?.trim() || null,
       status: payload.status || 'active',
     },
     p_merge_duplicates: true,
@@ -143,15 +166,7 @@ export async function createClient(payload: ClientPayload): Promise<ClientRecord
   return createClientWithDuplicateHandling(payload, 'add');
 }
 
-export async function updateClient(id: string, payload: Partial<{
-  first_name: string;
-  last_name: string;
-  company: string;
-  email: string;
-  phone: string;
-  address: string;
-  status: string;
-}>): Promise<ClientRecord> {
+export async function updateClient(id: string, payload: Partial<ClientPayload>): Promise<ClientRecord> {
   const updatePayload: Record<string, any> = {};
   if (payload.first_name !== undefined) updatePayload.first_name = payload.first_name.trim();
   if (payload.last_name !== undefined) updatePayload.last_name = payload.last_name.trim();
@@ -159,6 +174,15 @@ export async function updateClient(id: string, payload: Partial<{
   if (payload.email !== undefined) updatePayload.email = payload.email?.trim() || null;
   if (payload.phone !== undefined) updatePayload.phone = payload.phone?.trim() || null;
   if (payload.address !== undefined) updatePayload.address = payload.address?.trim() || null;
+  if (payload.street_number !== undefined) updatePayload.street_number = payload.street_number?.trim() || null;
+  if (payload.street_name !== undefined) updatePayload.street_name = payload.street_name?.trim() || null;
+  if (payload.city !== undefined) updatePayload.city = payload.city?.trim() || null;
+  if (payload.province !== undefined) updatePayload.province = payload.province?.trim() || null;
+  if (payload.postal_code !== undefined) updatePayload.postal_code = payload.postal_code?.trim() || null;
+  if (payload.country !== undefined) updatePayload.country = payload.country?.trim() || null;
+  if (payload.latitude !== undefined) updatePayload.latitude = payload.latitude;
+  if (payload.longitude !== undefined) updatePayload.longitude = payload.longitude;
+  if (payload.place_id !== undefined) updatePayload.place_id = payload.place_id?.trim() || null;
   if (payload.status !== undefined) updatePayload.status = payload.status;
 
   const { data, error } = await supabase.from('clients').update(updatePayload).eq('id', id).select('*').single();
@@ -168,12 +192,33 @@ export async function updateClient(id: string, payload: Partial<{
 
 export async function softDeleteClient(id: string): Promise<SoftDeleteClientResult> {
   const orgId = await getCurrentOrgIdOrThrow();
+  const now = new Date().toISOString();
 
+  // Try the RPC first
   const { data, error } = await supabase.rpc('soft_delete_client', {
     p_org_id: orgId,
     p_client_id: id,
   });
-  if (error) throw error;
+
+  const rpcWorked = !error && Number((data as any)?.client || 0) > 0;
+
+  if (!rpcWorked) {
+    // Fallback: direct update — handles org_id mismatch edge cases
+    console.warn('[clients] soft_delete_client RPC returned 0 or failed, using direct update fallback');
+    const { error: updateError } = await supabase
+      .from('clients')
+      .update({ deleted_at: now })
+      .eq('id', id)
+      .is('deleted_at', null);
+    if (updateError) throw updateError;
+
+    // Also soft-delete related jobs, leads, pipeline_deals
+    await supabase.from('jobs').update({ deleted_at: now }).eq('client_id', id).is('deleted_at', null);
+    await supabase.from('leads').update({ deleted_at: now }).eq('client_id', id).is('deleted_at', null);
+    await supabase.from('pipeline_deals').update({ deleted_at: now }).eq('client_id', id).is('deleted_at', null);
+
+    return { client: 1, jobs: 0, leads: 0, pipeline_deals: 0, other_rows: 0 };
+  }
 
   return {
     client: Number((data as any)?.client || 0),
@@ -219,4 +264,18 @@ export async function getClientById(clientId: string): Promise<ClientRecord | nu
   const { data, error } = await supabase.from('clients_active').select('*').eq('id', clientId).maybeSingle();
   if (error) throw error;
   return (data as ClientRecord | null) || null;
+}
+
+/** Find other clients sharing the same Google place_id (for duplicate address warning). */
+export async function findClientsByPlaceId(placeId: string, excludeClientId?: string): Promise<ClientRecord[]> {
+  if (!placeId) return [];
+  let query = supabase
+    .from('clients_active')
+    .select('*')
+    .eq('place_id', placeId)
+    .order('created_at', { ascending: true });
+  if (excludeClientId) query = query.neq('id', excludeClientId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []) as ClientRecord[];
 }

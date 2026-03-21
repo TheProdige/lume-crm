@@ -30,20 +30,25 @@ const statusVariants: Record<string, Variant> = {
   void: 'danger',
   past_due: 'danger',
   overdue: 'danger',
-  // Lead stages
+  // Lead / Pipeline stages
+  new: 'info',
+  follow_up_1: 'info',
+  follow_up_2: 'warning',
+  follow_up_3: 'warning',
+  closed: 'success',
+  lost: 'danger',
+  // Display labels
+  'New': 'info',
+  'Follow-up 1': 'info',
+  'Follow-up 2': 'warning',
+  'Follow-up 3': 'warning',
+  'Closed': 'success',
+  'Lost': 'danger',
+  // Legacy (in case any DB value slips through)
   qualified: 'info',
   contacted: 'info',
   quote_sent: 'warning',
-  closed: 'success',
-  lost: 'danger',
   won: 'success',
-  new: 'info',
-  // Pipeline
-  'Qualified': 'info',
-  'Contact': 'info',
-  'Quote Sent': 'warning',
-  'Closed': 'success',
-  'Lost': 'danger',
   // Payment
   succeeded: 'success',
   pending: 'warning',

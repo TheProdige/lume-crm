@@ -47,12 +47,58 @@ export interface EmailConflictRecord {
   email?: string | null;
 }
 
+export const LEAD_STATUSES = [
+  'new', 'follow_up_1', 'follow_up_2', 'follow_up_3', 'closed', 'lost',
+] as const;
+
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+
+export const LEAD_STATUS_LABELS: Record<string, string> = {
+  new: 'New',
+  follow_up_1: 'Follow-up 1',
+  follow_up_2: 'Follow-up 2',
+  follow_up_3: 'Follow-up 3',
+  closed: 'Closed',
+  lost: 'Lost',
+};
+
 const LEAD_STATUS_MAP: Record<string, string> = {
+  New: 'new',
+  'Follow-up 1': 'follow_up_1',
+  'Follow-up 2': 'follow_up_2',
+  'Follow-up 3': 'follow_up_3',
+  Closed: 'closed',
+  Lost: 'lost',
+  // Legacy mappings → new stages
+  Contacted: 'follow_up_1',
+  'Estimate Sent': 'follow_up_2',
+  'Follow-Up': 'follow_up_1',
+  Won: 'closed',
+  Archived: 'lost',
   Lead: 'new',
-  Qualified: 'qualified',
-  Proposal: 'contacted',
-  Negotiation: 'contacted',
-  Closed: 'won',
+  Qualified: 'new',
+  Proposal: 'follow_up_1',
+  Negotiation: 'follow_up_2',
+};
+
+const DB_TO_UI_STATUS: Record<string, string> = {
+  new: 'New',
+  follow_up_1: 'Follow-up 1',
+  follow_up_2: 'Follow-up 2',
+  follow_up_3: 'Follow-up 3',
+  closed: 'Closed',
+  lost: 'Lost',
+  // Legacy → new display
+  contacted: 'Follow-up 1',
+  estimate_sent: 'Follow-up 2',
+  follow_up: 'Follow-up 1',
+  won: 'Closed',
+  archived: 'Lost',
+  qualified: 'New',
+  quote_sent: 'Follow-up 2',
+  lead: 'New',
+  proposal: 'Follow-up 1',
+  negotiation: 'Follow-up 2',
 };
 
 function toDbStatus(value?: string): string {
@@ -63,12 +109,7 @@ function toDbStatus(value?: string): string {
 
 function toUiStatus(value?: string): string {
   const raw = String(value || '').trim().toLowerCase();
-  if (raw === 'new') return 'Lead';
-  if (raw === 'contacted') return 'Proposal';
-  if (raw === 'qualified') return 'Qualified';
-  if (raw === 'won') return 'Closed';
-  if (raw === 'lost') return 'Lost';
-  return value || 'Lead';
+  return DB_TO_UI_STATUS[raw] || value || 'New';
 }
 
 function normalizeLead(raw: any): Lead {
@@ -83,8 +124,8 @@ function normalizeLead(raw: any): Lead {
     email: raw.email || '',
     phone: raw.phone || '',
     address: raw.address || null,
-    company: raw.company || raw.title || '',
-    title: raw.title || raw.company || '',
+    company: raw.company || '',
+    title: raw.title || '',
     source: raw.source || '',
     status: toUiStatus(raw.status),
     assigned_to: raw.assigned_to,
@@ -95,6 +136,7 @@ function normalizeLead(raw: any): Lead {
     assigned_team: raw.assigned_team || null,
     line_items: Array.isArray(raw.line_items) ? raw.line_items : [],
     description: raw.description || null,
+    client_id: raw.client_id || null,
     converted_to_client_id: raw.converted_to_client_id || null,
     deleted_at: raw.deleted_at || null,
     user_id: raw.created_by,
@@ -246,6 +288,44 @@ export async function updateLeadScoped(id: string, input: UpdateLeadInput): Prom
 
   const { data, error } = await supabase.from('leads').update(payload).eq('id', id).select('*').single();
   if (error) throw error;
+
+  // Sync lead status → pipeline deal stage (non-blocking)
+  if (input.status !== undefined) {
+    const dbStatus = toDbStatus(input.status);
+    supabase
+      .from('pipeline_deals')
+      .select('id')
+      .eq('lead_id', id)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle()
+      .then(({ data: deal }) => {
+        if (deal?.id) {
+          supabase.rpc('set_deal_stage', { p_deal_id: deal.id, p_stage: dbStatus }).then(({ error: stageErr }) => {
+            if (stageErr) console.warn('Lead→Deal stage sync failed:', stageErr.message);
+          });
+        }
+      });
+  }
+
+  // Sync contact fields to the linked client record (non-blocking)
+  const clientId = data.client_id || data.converted_to_client_id;
+  if (clientId) {
+    const clientUpdate: Record<string, any> = {};
+    if (input.first_name !== undefined) clientUpdate.first_name = input.first_name.trim();
+    if (input.last_name !== undefined) clientUpdate.last_name = input.last_name.trim();
+    if (input.email !== undefined) clientUpdate.email = input.email?.trim() || null;
+    if (input.phone !== undefined) clientUpdate.phone = input.phone?.trim() || null;
+    if (input.address !== undefined) clientUpdate.address = input.address?.trim() || null;
+    if (input.company !== undefined) clientUpdate.company = input.company?.trim() || null;
+    if (Object.keys(clientUpdate).length > 0) {
+      clientUpdate.updated_at = new Date().toISOString();
+      supabase.from('clients').update(clientUpdate).eq('id', clientId).then(({ error: syncErr }) => {
+        if (syncErr) console.warn('Lead→Client sync failed:', syncErr.message);
+      });
+    }
+  }
+
   return normalizeLead(data);
 }
 
@@ -257,23 +337,79 @@ export async function deleteLeadScoped(id: string): Promise<void> {
     body: JSON.stringify({ leadId: id, orgId: null }),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error || `Request failed (${response.status}).`);
+  if (!response.ok) {
+    throw new Error(payload?.error || `Failed to delete lead (${response.status}).`);
+  }
 }
 
 export async function convertLeadToClient(leadId: string): Promise<{ lead: Lead; clientId: string }> {
-  const { data: clientId, error: rpcError } = await supabase.rpc('convert_lead_to_client', {
-    p_lead_id: leadId,
-  });
-  if (rpcError) throw rpcError;
-
-  const { data: leadData, error: leadError } = await supabase
+  // Fetch the lead first
+  const { data: leadRow, error: leadFetchError } = await supabase
     .from('leads')
     .select('*')
     .eq('id', leadId)
     .single();
-  if (leadError) throw leadError;
+  if (leadFetchError) throw leadFetchError;
+  if (!leadRow) throw new Error('Lead not found.');
 
-  return { lead: normalizeLead(leadData), clientId: String(clientId) };
+  // With the new sync model, every lead already has a client_id
+  const clientId = leadRow.client_id || leadRow.converted_to_client_id;
+  if (!clientId) throw new Error('Lead has no linked client. Please contact support.');
+
+  // Promote client status from 'lead' to 'active'
+  await supabase
+    .from('clients')
+    .update({ status: 'active', updated_at: new Date().toISOString() })
+    .eq('id', clientId)
+    .eq('status', 'lead');
+
+  // Mark lead as converted/closed
+  const { data: updatedLead, error: updateError } = await supabase
+    .from('leads')
+    .update({
+      converted_to_client_id: clientId,
+      status: 'closed',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', leadId)
+    .select('*')
+    .single();
+  if (updateError) throw updateError;
+
+  return { lead: normalizeLead(updatedLead), clientId: String(clientId) };
+}
+
+/**
+ * Resolve the client_id for a lead. Every lead should have a client_id now.
+ * Returns the client_id or null if the lead doesn't exist.
+ */
+export async function resolveClientIdForLead(leadId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('leads')
+    .select('client_id, converted_to_client_id')
+    .eq('id', leadId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const clientId = data.client_id || data.converted_to_client_id || null;
+  if (clientId) return clientId;
+
+  // Fallback: ask server to resolve (it can create a client for legacy leads)
+  try {
+    const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
+    const response = await fetch('/api/leads/resolve-client', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ leadId }),
+    });
+    if (response.ok) {
+      const payload = await response.json();
+      if (payload?.clientId) return payload.clientId;
+    }
+  } catch {
+    // Server fallback failed — return null gracefully
+  }
+  return null;
 }
 
 export async function createLeadQuick(input: {
@@ -320,6 +456,33 @@ export async function createLeadQuick(input: {
   const leadRow = (payload as any)?.lead || null;
   if (!leadRow?.id) throw new Error('Lead created but lead row is missing.');
   return normalizeLead(leadRow);
+}
+
+export async function updateLeadStatus(leadId: string, status: LeadStatus): Promise<{ ok: boolean; changed: boolean }> {
+  const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
+  const response = await fetch('/api/leads/update-status', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ leadId, status, orgId: null }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `Failed to update status (${response.status}).`);
+  return payload;
+}
+
+export async function convertLeadToJob(
+  leadId: string,
+  jobTitle?: string,
+): Promise<{ ok: boolean; lead_id: string; client_id: string; job_id: string; job_title: string }> {
+  const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
+  const response = await fetch('/api/leads/convert-to-job', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ leadId, jobTitle: jobTitle || undefined, orgId: null }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `Failed to convert lead (${response.status}).`);
+  return payload;
 }
 
 export async function exportAllLeadsCsv(): Promise<string> {

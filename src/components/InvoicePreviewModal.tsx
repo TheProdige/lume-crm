@@ -2,14 +2,21 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { FileText, Send, Upload, X } from 'lucide-react';
 import { toast } from 'sonner';
+import { useTranslation } from '../i18n';
 import {
   formatMoneyFromCents,
+  getCompanySettings,
   getInvoiceById,
   getOrgBillingSettings,
   listInvoiceTemplates,
+  listVisualTemplates,
   saveInvoiceDraft,
   sendInvoice,
 } from '../lib/invoicesApi';
+import InvoiceRenderer from './invoice/InvoiceRenderer';
+import { buildRenderData } from './invoice/buildRenderData';
+import InvoiceTemplatePicker from './invoice/InvoiceTemplatePicker';
+import type { InvoiceLayoutType } from './invoice/types';
 
 interface InvoicePreviewModalProps {
   isOpen: boolean;
@@ -29,22 +36,34 @@ export default function InvoicePreviewModal({ isOpen, invoiceId, onClose, onSent
   const [smsEnabled, setSmsEnabled] = useState(true);
   const [emailTo, setEmailTo] = useState('');
   const [phoneTo, setPhoneTo] = useState('');
+  const [company, setCompany] = useState<any>(null);
+  const [visualTemplates, setVisualTemplates] = useState<any[]>([]);
+  const [selectedLayout, setSelectedLayout] = useState<InvoiceLayoutType>('classic');
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (!isOpen || !invoiceId) return;
     setLoading(true);
-    Promise.all([getInvoiceById(invoiceId), listInvoiceTemplates(), getOrgBillingSettings()])
-      .then(([invoiceDetail, templateRows, settings]) => {
+    Promise.all([getInvoiceById(invoiceId), listInvoiceTemplates(), getOrgBillingSettings(), getCompanySettings(), listVisualTemplates()])
+      .then(([invoiceDetail, templateRows, settings, companyInfo, visTpls]) => {
         setDetail(invoiceDetail);
         setTemplates(templateRows || []);
         setBillingSettings(settings || null);
+        setCompany(companyInfo || null);
+        setVisualTemplates(visTpls || []);
         setEmailTo(invoiceDetail?.client?.email || '');
         setPhoneTo(invoiceDetail?.client?.phone || '');
         setEmailEnabled(Boolean(invoiceDetail?.client?.email));
         setSmsEnabled(Boolean(invoiceDetail?.client?.phone));
+        // Pick layout from invoice template if set
+        const tplId = (invoiceDetail?.invoice as any)?.template_id;
+        if (tplId) {
+          const tpl = visTpls?.find((t: any) => t.id === tplId);
+          if (tpl?.layout_type) setSelectedLayout(tpl.layout_type as InvoiceLayoutType);
+        }
       })
       .catch((error: any) => {
-        toast.error(error?.message || 'Failed to load invoice preview.');
+        toast.error(error?.message || t.modals.failedLoadPreview);
       })
       .finally(() => setLoading(false));
   }, [invoiceId, isOpen]);
@@ -82,9 +101,9 @@ export default function InvoicePreviewModal({ isOpen, invoiceId, onClose, onSent
       });
       const refreshed = await getInvoiceById(detail.invoice.id);
       setDetail(refreshed);
-      toast.success('Template applied to invoice draft.');
+      toast.success(t.modals.templateApplied);
     } catch (error: any) {
-      toast.error(error?.message || 'Unable to apply template.');
+      toast.error(error?.message || t.modals.unableApplyTemplate);
     }
   }
 
@@ -107,16 +126,16 @@ export default function InvoicePreviewModal({ isOpen, invoiceId, onClose, onSent
       });
       const refreshed = await getInvoiceById(detail.invoice.id);
       setDetail(refreshed);
-      toast.success('Template imported.');
+      toast.success(t.modals.templateImported);
     } catch (error: any) {
-      toast.error(error?.message || 'Invalid template file.');
+      toast.error(error?.message || t.modals.invalidTemplateFile);
     }
   }
 
   async function handleSend() {
     if (!detail?.invoice?.id || sending) return;
     if (channels.length === 0) {
-      toast.info('No email/phone available. Copy payment link fallback.');
+      toast.info(t.modals.noContactFallback);
     }
     setSending(true);
     try {
@@ -126,15 +145,15 @@ export default function InvoicePreviewModal({ isOpen, invoiceId, onClose, onSent
         toEmail: emailTo,
         toPhone: phoneTo,
       });
-      toast.success('Invoice sent.');
+      toast.success(t.modals.invoiceSent);
       if (result.payment_link && channels.length === 0) {
         await navigator.clipboard.writeText(result.payment_link);
-        toast.info('Payment link copied.');
+        toast.info(t.modals.paymentLinkCopied);
       }
       await onSent?.();
       onClose();
     } catch (error: any) {
-      toast.error(error?.message || 'Unable to send invoice.');
+      toast.error(error?.message || t.modals.unableToSend);
     } finally {
       setSending(false);
     }
@@ -148,82 +167,55 @@ export default function InvoicePreviewModal({ isOpen, invoiceId, onClose, onSent
             <div className="flex items-center justify-between border-b border-border pb-4">
               <div className="flex items-center gap-2">
                 <FileText size={18} />
-                <h3 className="text-2xl font-semibold tracking-tight">Invoice Preview</h3>
+                <h3 className="text-2xl font-semibold tracking-tight">{t.modals.invoicePreview}</h3>
               </div>
               <button onClick={onClose} className="rounded-lg p-2 hover:bg-surface-secondary"><X size={16} /></button>
             </div>
 
-            {loading ? <p className="mt-4 text-sm text-text-secondary">Loading preview...</p> : null}
+            {loading ? <p className="mt-4 text-sm text-text-secondary">{t.modals.loadingPreview}</p> : null}
 
             {!loading && detail ? (
               <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-                <div className="space-y-4 lg:col-span-2">
-                  <div className="rounded-2xl border border-border bg-gradient-to-br from-surface to-surface-secondary p-5 shadow-sm">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-xs uppercase tracking-widest text-text-tertiary">From</p>
-                        <p className="text-xl font-semibold text-text-primary">{companyName}</p>
-                        <p className="text-sm text-text-secondary">{billingSettings?.address || 'No company address set'}</p>
-                      </div>
-                      <span className="rounded-full border border-success bg-success-light px-2.5 py-1 text-xs font-medium text-success">
-                        {String(detail.invoice.status || 'draft').toUpperCase()}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-surface/70 p-4">
-                    <p className="text-xs uppercase tracking-widest text-text-tertiary">To</p>
-                    <p className="font-semibold">{detail.invoice.client_name}</p>
-                    <p className="text-sm text-text-secondary">{detail.client?.email || 'No email'} | {detail.client?.phone || 'No phone'}</p>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-surface/70 p-4">
-                    <p className="text-sm font-semibold">Items</p>
-                    <div className="mt-2 space-y-2">
-                      {detail.items.map((item) => (
-                        <div key={item.id} className="flex items-center justify-between text-sm">
-                          <span>{item.description} ({item.qty} x {formatMoneyFromCents(item.unit_price_cents)})</span>
-                          <span className="font-medium">{formatMoneyFromCents(item.line_total_cents)}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-3 space-y-1 border-t border-black/10 pt-2 text-sm">
-                      <p className="flex items-center justify-between"><span>Subtotal</span><span>{formatMoneyFromCents(subtotalCents)}</span></p>
-                      <p className="flex items-center justify-between"><span>Taxes</span><span>{formatMoneyFromCents(taxCents)}</span></p>
-                      <p className="flex items-center justify-between text-base font-semibold"><span>Total</span><span>{formatMoneyFromCents(totalCents)}</span></p>
+                {/* Visual Invoice Preview */}
+                <div className="lg:col-span-2">
+                  <div className="rounded-xl bg-gray-100 p-4">
+                    <div className="mx-auto max-w-[540px] rounded-lg bg-white p-6 shadow-md">
+                      <InvoiceRenderer
+                        data={buildRenderData(detail, company, visualTemplates.find((t) => t.layout_type === selectedLayout)?.branding)}
+                        layout={selectedLayout}
+                      />
                     </div>
                   </div>
                 </div>
 
+                {/* Sidebar controls */}
                 <div className="space-y-4">
+                  {/* Template picker */}
+                  <div className="rounded-xl border border-border bg-surface/70 p-4">
+                    <InvoiceTemplatePicker
+                      selectedLayout={selectedLayout}
+                      onSelect={(l) => setSelectedLayout(l)}
+                      templates={visualTemplates}
+                    />
+                  </div>
+
+                  {/* Data template apply */}
                   <div className="space-y-2 rounded-xl border border-border bg-surface/70 p-4">
-                    <p className="text-sm font-semibold">Template</p>
+                    <p className="text-sm font-semibold">{t.modals.template} (Data)</p>
                     <select value={selectedTemplateId} onChange={(event) => void handleTemplateApply(event.target.value)} className="glass-input w-full">
-                      <option value="">Select template</option>
+                      <option value="">{t.modals.selectTemplate}</option>
                       {templates.map((template) => (
                         <option key={template.id} value={template.id}>{template.name}</option>
                       ))}
                     </select>
-                    <label className="glass-button inline-flex cursor-pointer items-center gap-2">
-                      <Upload size={14} />
-                      Import template
-                      <input
-                        type="file"
-                        accept="application/json"
-                        className="hidden"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          if (file) void handleImportTemplate(file);
-                        }}
-                      />
-                    </label>
                   </div>
 
+                  {/* Send channels */}
                   <div className="space-y-3 rounded-xl border border-border bg-surface/70 p-4">
-                    <p className="text-sm font-semibold">Send channels</p>
+                    <p className="text-sm font-semibold">{t.modals.sendChannels}</p>
                     <label className="flex items-center gap-2 text-sm">
                       <input type="checkbox" checked={emailEnabled} onChange={(event) => setEmailEnabled(event.target.checked)} />
-                      Email
+                      {t.common.email}
                     </label>
                     <input value={emailTo} onChange={(event) => setEmailTo(event.target.value)} className="glass-input w-full" placeholder="Client email" />
                     <label className="flex items-center gap-2 text-sm">
@@ -233,7 +225,7 @@ export default function InvoicePreviewModal({ isOpen, invoiceId, onClose, onSent
                     <input value={phoneTo} onChange={(event) => setPhoneTo(event.target.value)} className="glass-input w-full" placeholder="Client phone" />
                     <button onClick={() => void handleSend()} className="glass-button-primary inline-flex w-full items-center justify-center gap-2" disabled={sending}>
                       <Send size={14} />
-                      {sending ? 'Sending...' : 'Send invoice'}
+                      {sending ? t.jobDetails.sending : t.modals.sendInvoice}
                     </button>
                   </div>
                 </div>

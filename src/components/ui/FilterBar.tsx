@@ -56,7 +56,7 @@ interface FilterSelectProps {
 export function FilterSelect({ value, onChange, options, icon, className }: FilterSelectProps) {
   return (
     <div className={cn(
-      'inline-flex items-center gap-1.5 rounded-[0.625rem] border-[1.5px] border-outline-subtle bg-surface px-2.5 py-[5px]',
+      'inline-flex items-center gap-1.5 rounded-md border border-outline bg-surface px-2.5 py-[5px]',
       className
     )}>
       {icon && <span className="text-text-tertiary">{icon}</span>}
@@ -86,10 +86,10 @@ export function FilterChip({ label, active, onClick, count }: FilterChipProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-[0.625rem] border-[1.5px] px-2.5 py-[5px] text-[13px] font-semibold transition-colors',
+        'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-[5px] text-[13px] font-medium transition-colors',
         active
           ? 'border-text-primary bg-text-primary text-surface'
-          : 'border-outline-subtle bg-surface text-text-secondary hover:border-outline hover:bg-surface-secondary'
+          : 'border-outline bg-surface text-text-secondary hover:bg-surface-tertiary'
       )}
     >
       {label}

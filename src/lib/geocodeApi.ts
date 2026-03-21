@@ -1,8 +1,12 @@
 import { supabase } from './supabase';
 
-export async function geocodeJob(jobId: string): Promise<void> {
+async function getAuthToken(): Promise<string | null> {
   const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  return data.session?.access_token || null;
+}
+
+export async function geocodeJob(jobId: string): Promise<void> {
+  const token = await getAuthToken();
   if (!token) return;
 
   try {
@@ -20,4 +24,31 @@ export async function geocodeJob(jobId: string): Promise<void> {
   } catch (err) {
     console.warn(`[geocode] network error for job ${jobId}`, err);
   }
+}
+
+export interface BatchGeocodeResult {
+  ok: boolean;
+  processed: number;
+  succeeded: number;
+  failed: number;
+}
+
+export async function geocodeBatch(): Promise<BatchGeocodeResult> {
+  const token = await getAuthToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const res = await fetch('/api/geocode-batch', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as any)?.error || `Batch geocode failed (${res.status})`);
+  }
+
+  return res.json() as Promise<BatchGeocodeResult>;
 }

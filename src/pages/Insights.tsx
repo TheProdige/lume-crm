@@ -28,6 +28,7 @@ import {
 import { formatMoneyFromCents } from '../lib/invoicesApi';
 import { cn } from '../lib/utils';
 import { PageHeader, StatCard } from '../components/ui';
+import { useTranslation } from '../i18n';
 
 const DONUT_COLORS = ['#1961ED', '#334155', '#64748B', '#94A3B8', '#CBD5E1'];
 
@@ -65,6 +66,7 @@ function formatPercent(value: number) {
 }
 
 export default function Insights() {
+  const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const defaults = useMemo(() => getDefaultRange(), []);
 
@@ -99,23 +101,13 @@ export default function Insights() {
 
   const overviewItems = useMemo(() => {
     if (!overview) return [];
-    const baseItems = [
-      { id: 'new_leads', label: 'New leads', value: overview.new_leads_count, format: 'count' as const },
-      { id: 'converted_quotes', label: 'Converted quotes', value: overview.converted_quotes_count, format: 'count' as const },
-      { id: 'new_jobs', label: 'New one-off jobs', value: overview.new_oneoff_jobs_count, format: 'count' as const },
-      { id: 'invoiced', label: 'Invoiced value', value: overview.invoiced_value_cents, format: 'money' as const },
+    return [
+      { id: 'new_leads', label: t.insights.newLeads, value: overview.new_leads_count, format: 'count' as const },
+      { id: 'converted_quotes', label: t.insights.convertedQuotes, value: overview.converted_quotes_count, format: 'count' as const },
+      { id: 'new_jobs', label: t.insights.newOneOffJobs, value: overview.new_oneoff_jobs_count, format: 'count' as const },
+      { id: 'invoiced', label: t.insights.invoicedValue, value: overview.invoiced_value_cents, format: 'money' as const },
     ];
-    if (overview.requests_count != null) {
-      return [
-        { id: 'new_leads', label: 'New leads', value: overview.new_leads_count, format: 'count' as const },
-        { id: 'requests', label: 'New requests', value: overview.requests_count, format: 'count' as const },
-        { id: 'converted_quotes', label: 'Converted quotes', value: overview.converted_quotes_count, format: 'count' as const },
-        { id: 'new_jobs', label: 'New one-off jobs', value: overview.new_oneoff_jobs_count, format: 'count' as const },
-        { id: 'invoiced', label: 'Invoiced value', value: overview.invoiced_value_cents, format: 'money' as const },
-      ];
-    }
-    return baseItems;
-  }, [overview]);
+  }, [overview, t]);
 
   const revenueChartData = useMemo(
     () => revenueSeries.map((row) => ({
@@ -139,14 +131,14 @@ export default function Insights() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Insights" subtitle="Business analytics and reporting" icon={TrendingUp} iconColor="cyan">
+      <PageHeader title={t.insights.title} subtitle={t.insights.subtitle} icon={TrendingUp} iconColor="cyan">
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">
             <Calendar size={12} />
-            Range
+            {t.insights.range}
           </span>
           <input type="date" value={from} onChange={(e) => updateParam('from', e.target.value)} className="glass-input !py-1.5 text-xs" />
-          <span className="text-xs text-text-tertiary">to</span>
+          <span className="text-xs text-text-tertiary">{t.insights.to}</span>
           <input type="date" value={to} onChange={(e) => updateParam('to', e.target.value)} className="glass-input !py-1.5 text-xs" />
         </div>
       </PageHeader>
@@ -167,22 +159,22 @@ export default function Insights() {
                 <div className="section-card p-4">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <p className="text-[15px] font-bold text-text-primary">Revenue</p>
-                      <p className="text-xs text-text-tertiary">{from} to {to}</p>
+                      <p className="text-[15px] font-bold text-text-primary">{t.insights.revenue}</p>
+                      <p className="text-xs text-text-tertiary">{from} {t.insights.to} {to}</p>
                     </div>
                     <label className="inline-flex items-center gap-2 text-[13px] text-text-secondary">
                       <input type="checkbox" checked={showInvoicedSeries} onChange={(e) => setShowInvoicedSeries(e.target.checked)} />
-                      Show invoiced
+                      {t.insights.showInvoiced}
                     </label>
                   </div>
 
                   <div className="mb-3 flex items-center gap-6">
                     <div>
-                      <p className="text-[11px] uppercase tracking-wider text-text-tertiary">Revenue</p>
+                      <p className="text-[11px] uppercase tracking-wider text-text-tertiary">{t.insights.revenue}</p>
                       <p className="text-2xl font-bold text-text-primary tabular-nums">{formatMoneyCompactFromCents(overview?.revenue_cents || 0)}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-wider text-text-tertiary">Invoiced</p>
+                      <p className="text-[11px] uppercase tracking-wider text-text-tertiary">{t.insights.invoiced}</p>
                       <p className="text-2xl font-bold text-text-primary tabular-nums">{formatMoneyCompactFromCents(overview?.invoiced_value_cents || 0)}</p>
                     </div>
                   </div>
@@ -195,11 +187,11 @@ export default function Insights() {
                         <YAxis tick={{ fill: 'var(--color-text-secondary)', fontSize: 12 }} />
                         <Tooltip formatter={(value: number, name: string) => [
                           new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value || 0)),
-                          name === 'revenue' ? 'Revenue' : 'Invoiced',
+                          name === 'revenue' ? t.insights.revenue : t.insights.invoiced,
                         ]} />
                         <Legend />
-                        <Bar dataKey="revenue" fill="var(--color-primary)" radius={[4, 4, 0, 0]} name="Revenue" />
-                        {showInvoicedSeries && <Bar dataKey="invoiced" fill="#94A3B8" radius={[4, 4, 0, 0]} name="Invoiced" />}
+                        <Bar dataKey="revenue" fill="var(--color-primary)" radius={[4, 4, 0, 0]} name={t.insights.revenue} />
+                        {showInvoicedSeries && <Bar dataKey="invoiced" fill="#94A3B8" radius={[4, 4, 0, 0]} name={t.insights.invoiced} />}
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -207,7 +199,7 @@ export default function Insights() {
 
                 {revenueBySource.length > 0 && (
                   <div className="section-card p-4">
-                    <p className="text-[15px] font-bold text-text-primary">Revenue by Lead Source</p>
+                    <p className="text-[15px] font-bold text-text-primary">{t.insights.revenueBySource}</p>
                     <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
                       <div className="h-[260px]">
                         <ResponsiveContainer width="100%" height="100%">
@@ -241,17 +233,17 @@ export default function Insights() {
             {tab === 'lead_conversion' && (
               <div className="space-y-5">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  <StatCard label="Leads created" value={leadConversion?.leads_created || 0} iconColor="blue" />
-                  <StatCard label="Leads closed" value={leadConversion?.leads_closed || 0} iconColor="green" />
-                  <StatCard label="Conversion rate" value={formatPercent(leadConversion?.conversion_rate || 0)} iconColor="purple" />
+                  <StatCard label={t.insights.leadsCreated} value={leadConversion?.leads_created || 0} iconColor="blue" />
+                  <StatCard label={t.insights.leadsClosed} value={leadConversion?.leads_closed || 0} iconColor="green" />
+                  <StatCard label={t.insights.conversionRate} value={formatPercent(leadConversion?.conversion_rate || 0)} iconColor="purple" />
                 </div>
 
                 <div className="section-card p-4">
-                  <p className="text-[15px] font-bold text-text-primary">Funnel</p>
+                  <p className="text-[15px] font-bold text-text-primary">{t.insights.funnel}</p>
                   <div className="mt-3 space-y-3">
                     <div>
                       <div className="mb-1 flex justify-between text-xs text-text-tertiary">
-                        <span>Created</span>
+                        <span>{t.insights.created}</span>
                         <span className="tabular-nums">{leadConversion?.leads_created || 0}</span>
                       </div>
                       <div className="h-2.5 rounded-full bg-surface-tertiary">
@@ -260,14 +252,14 @@ export default function Insights() {
                     </div>
                     <div>
                       <div className="mb-1 flex justify-between text-xs text-text-tertiary">
-                        <span>Closed</span>
+                        <span>{t.insights.closed}</span>
                         <span className="tabular-nums">{leadConversion?.leads_closed || 0}</span>
                       </div>
                       <div className="h-2.5 rounded-full bg-surface-tertiary">
                         <div
                           className="h-2.5 rounded-full bg-primary"
                           style={{
-                            width: `${Math.max(3, Math.min(100, ((leadConversion?.leads_closed || 0) / Math.max(1, leadConversion?.leads_created || 0)) * 100))}%`,
+                            width: `${(leadConversion?.leads_created || 0) > 0 ? Math.max(3, Math.min(100, ((leadConversion?.leads_closed || 0) / leadConversion!.leads_created) * 100)) : 0}%`,
                           }}
                         />
                       </div>
@@ -280,13 +272,13 @@ export default function Insights() {
             {tab === 'jobs' && (
               <div className="space-y-5">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  <StatCard label="Jobs created" value={jobsSummary?.totalJobs || 0} iconColor="blue" />
-                  <StatCard label="Scheduled" value={jobsSummary?.scheduledJobs || 0} iconColor="green" />
-                  <StatCard label="Unscheduled" value={jobsSummary?.unscheduledJobs || 0} iconColor="amber" />
+                  <StatCard label={t.insights.jobsCreated} value={jobsSummary?.totalJobs || 0} iconColor="blue" />
+                  <StatCard label={t.insights.scheduled} value={jobsSummary?.scheduledJobs || 0} iconColor="green" />
+                  <StatCard label={t.insights.unscheduled} value={jobsSummary?.unscheduledJobs || 0} iconColor="amber" />
                 </div>
 
                 <div className="section-card p-4">
-                  <p className="text-[15px] font-bold text-text-primary">Jobs by Team</p>
+                  <p className="text-[15px] font-bold text-text-primary">{t.insights.jobsByTeam}</p>
                   <div className="mt-3 h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={(jobsSummary?.byTeam || []).map((row) => ({ name: row.teamName, count: row.count }))}>
@@ -305,22 +297,22 @@ export default function Insights() {
             {tab === 'invoices' && (
               <div className="space-y-5">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                  <StatCard label="Draft" value={invoicesSummary?.count_draft || 0} iconColor="amber" />
-                  <StatCard label="Sent" value={invoicesSummary?.count_sent || 0} iconColor="blue" />
-                  <StatCard label="Paid" value={invoicesSummary?.count_paid || 0} iconColor="green" />
-                  <StatCard label="Past due" value={invoicesSummary?.count_past_due || 0} iconColor="rose" />
+                  <StatCard label={t.insights.draft} value={invoicesSummary?.count_draft || 0} iconColor="amber" />
+                  <StatCard label={t.insights.sent} value={invoicesSummary?.count_sent || 0} iconColor="blue" />
+                  <StatCard label={t.insights.paid} value={invoicesSummary?.count_paid || 0} iconColor="green" />
+                  <StatCard label={t.insights.pastDue} value={invoicesSummary?.count_past_due || 0} iconColor="rose" />
                 </div>
 
                 <div className="section-card p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-xs text-text-tertiary">Outstanding balance</p>
+                      <p className="text-xs text-text-tertiary">{t.insights.outstandingBalance}</p>
                       <p className="text-2xl font-bold text-text-primary tabular-nums">
                         {formatMoneyFromCents(invoicesSummary?.total_outstanding_cents || 0)}
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-xs text-text-tertiary">Avg payment time</p>
+                      <p className="text-xs text-text-tertiary">{t.insights.avgPaymentTime}</p>
                       <p className="text-2xl font-bold text-text-primary tabular-nums">
                         {invoicesSummary?.avg_payment_time_days == null ? '--' : `${invoicesSummary.avg_payment_time_days.toFixed(1)} days`}
                       </p>

@@ -449,3 +449,39 @@ export async function downloadPayoutCsv(input: {
   const fileName = fileNameMatch?.[1] || `payouts-${new Date().toISOString().slice(0, 10)}.csv`;
   return { blob, fileName };
 }
+
+// Stripe transactions types and fetchers
+export interface StripeTransaction {
+  id: string;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  customer_email: string | null;
+  customer_name: string | null;
+  description: string | null;
+  payment_method: string | null;
+  created_at: string;
+  receipt_url: string | null;
+}
+
+export interface StripeTransactionsResponse {
+  transactions: StripeTransaction[];
+  has_more: boolean;
+  total_count: number;
+}
+
+export interface StripeBalanceResponse {
+  available: Array<{ amount: number; currency: string }>;
+  pending: Array<{ amount: number; currency: string }>;
+}
+
+export async function fetchStripeTransactions(limit = 25, startingAfter?: string): Promise<StripeTransactionsResponse> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (startingAfter) params.set('starting_after', startingAfter);
+  return fetchApiJson<StripeTransactionsResponse>(`/api/payments/stripe/transactions?${params.toString()}`);
+}
+
+export async function fetchStripeBalance(): Promise<StripeBalanceResponse> {
+  return fetchApiJson<StripeBalanceResponse>('/api/payments/stripe/balance');
+}

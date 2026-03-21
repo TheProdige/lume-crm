@@ -1,18 +1,46 @@
-import React, { useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  ArrowLeft, Eye, EyeOff, Copy, Link2, Check, Download, RefreshCw, Send,
+  Pencil, Ban, CopyPlus, CheckCircle2, MoreHorizontal,
+} from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
+import { toast } from 'sonner';
+import { motion, AnimatePresence } from 'motion/react';
 import { formatDate } from '../lib/utils';
-import { formatMoneyFromCents, getInvoiceById, getInvoiceRowUiStatus, toClientDisplayName } from '../lib/invoicesApi';
+import { cn } from '../lib/utils';
+import {
+  duplicateInvoice, formatMoneyFromCents, getCompanySettings, getInvoiceById,
+  getInvoiceRowUiStatus, listVisualTemplates, markInvoicePaidManually,
+  sendInvoice, toClientDisplayName, voidInvoice,
+} from '../lib/invoicesApi';
 import InvoicePaymentModal from '../components/InvoicePaymentModal';
+import { downloadInvoicePdf } from '../lib/generateInvoicePdf';
 import StatusBadge from '../components/ui/StatusBadge';
+import { useTranslation } from '../i18n';
+import { supabase } from '../lib/supabase';
+import ActivityTimeline from '../components/ActivityTimeline';
+import RequestPaymentModal from '../components/RequestPaymentModal';
+import InvoiceRenderer from '../components/invoice/InvoiceRenderer';
+import { buildRenderData } from '../components/invoice/buildRenderData';
+import type { InvoiceLayoutType } from '../components/invoice/types';
 
 export default function InvoiceDetails() {
+  const { t, language } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const params = useParams<{ id: string }>();
   const invoiceId = params.id || '';
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [recurringLoading, setRecurringLoading] = useState(false);
+  const [isRequestPaymentOpen, setIsRequestPaymentOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [sendLoading, setSendLoading] = useState(false);
+  const [showVisualPreview, setShowVisualPreview] = useState(false);
+
+  const companyQuery = useQuery({ queryKey: ['companySettings'], queryFn: getCompanySettings });
+  const templatesQuery = useQuery({ queryKey: ['visualTemplates'], queryFn: listVisualTemplates });
 
   const detailsQuery = useQuery({
     queryKey: ['invoiceDetails', invoiceId],
@@ -33,9 +61,9 @@ export default function InvoiceDetails() {
   if (detailsQuery.isError || !detailsQuery.data) {
     return (
       <div className="section-card border-danger-light p-6">
-        <p className="text-lg font-bold text-danger">Invoice not found.</p>
+        <p className="text-lg font-bold text-danger">{t.invoiceDetails.invoiceNotFound}</p>
         <button type="button" onClick={() => navigate('/invoices')} className="glass-button mt-3">
-          Back to invoices
+          {t.invoiceDetails.backToInvoices}
         </button>
       </div>
     );
@@ -43,70 +71,429 @@ export default function InvoiceDetails() {
 
   const { invoice, client, items } = detailsQuery.data;
   const uiStatus = getInvoiceRowUiStatus(invoice);
-  const canPayNow = invoice.balance_cents > 0 && (invoice.status === 'sent' || invoice.status === 'partial');
+  const canPayNow = invoice.balance_cents > 0 && ['sent', 'partial', 'sent_not_due', 'past_due'].includes(invoice.status);
+  const isDraft = invoice.status === 'draft';
+  const isVoid = invoice.status === 'void';
+  const isPaid = invoice.status === 'paid';
+
+  // Build render data for visual preview
+  const tpl = templatesQuery.data?.find((t) => t.id === (invoice as any).template_id);
+  const previewLayout: InvoiceLayoutType = (tpl?.layout_type as InvoiceLayoutType) || 'classic';
+  const renderData = useMemo(
+    () => buildRenderData(detailsQuery.data!, companyQuery.data, tpl?.branding),
+    [detailsQuery.data, companyQuery.data, tpl],
+  );
+
+  function invalidateAll() {
+    queryClient.invalidateQueries({ queryKey: ['invoiceDetails', invoiceId] });
+    queryClient.invalidateQueries({ queryKey: ['invoicesKpis30d'] });
+    queryClient.invalidateQueries({ queryKey: ['invoicesTable'] });
+  }
+
+  async function handleSendInvoice() {
+    if (!client?.email) {
+      toast.error(language === 'fr' ? 'Le client n\'a pas d\'email' : 'Client has no email');
+      return;
+    }
+    setSendLoading(true);
+    try {
+      await sendInvoice({ invoiceId: invoice.id, channels: ['email'], toEmail: client.email });
+      invalidateAll();
+      toast.success(language === 'fr' ? 'Facture envoyée!' : 'Invoice sent!');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to send');
+    } finally {
+      setSendLoading(false);
+    }
+  }
+
+  async function handleVoid() {
+    if (!window.confirm(language === 'fr' ? 'Annuler cette facture ?' : 'Void this invoice?')) return;
+    try {
+      await voidInvoice(invoice.id);
+      invalidateAll();
+      toast.success(language === 'fr' ? 'Facture annulée' : 'Invoice voided');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed');
+    }
+    setActionsOpen(false);
+  }
+
+  async function handleDuplicate() {
+    try {
+      const newId = await duplicateInvoice(invoice.id);
+      queryClient.invalidateQueries({ queryKey: ['invoicesTable'] });
+      toast.success(language === 'fr' ? 'Facture dupliquée' : 'Invoice duplicated');
+      navigate(`/invoices/${newId}/edit`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed');
+    }
+    setActionsOpen(false);
+  }
+
+  async function handleMarkPaid() {
+    if (!window.confirm(language === 'fr' ? 'Marquer comme payée ?' : 'Mark as paid?')) return;
+    try {
+      await markInvoicePaidManually(invoice.id);
+      invalidateAll();
+      queryClient.invalidateQueries({ queryKey: ['paymentsOverview'] });
+      toast.success(language === 'fr' ? 'Facture marquée payée' : 'Invoice marked as paid');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed');
+    }
+    setActionsOpen(false);
+  }
 
   return (
     <div className="space-y-6">
       <button type="button" onClick={() => navigate('/invoices')} className="glass-button inline-flex items-center gap-2">
         <ArrowLeft size={14} />
-        Back to invoices
+        {t.invoiceDetails.backToInvoices}
       </button>
 
       <section className="section-card p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-[15px] font-bold text-text-primary">{invoice.invoice_number}</h1>
-            <p className="mt-1 text-[13px] text-text-secondary">{invoice.subject || 'No subject'}</p>
+            <p className="mt-1 text-[13px] text-text-secondary">{invoice.subject || t.invoiceDetails.noSubject}</p>
           </div>
 
           <div className="flex items-center gap-2">
-            {canPayNow ? (
-              <button type="button" onClick={() => setIsPaymentModalOpen(true)} className="glass-button-primary">
-                Pay now
+            {/* Edit */}
+            {(isDraft || !isPaid) && (
+              <button
+                type="button"
+                onClick={() => navigate(`/invoices/${invoice.id}/edit`)}
+                className="glass-button inline-flex items-center gap-1.5 text-[12px]"
+              >
+                <Pencil size={12} />
+                {language === 'fr' ? 'Modifier' : 'Edit'}
               </button>
-            ) : null}
+            )}
+
+            {/* Send / Resend */}
+            {!isPaid && !isVoid && (
+              <button
+                type="button"
+                onClick={handleSendInvoice}
+                disabled={sendLoading}
+                className="glass-button inline-flex items-center gap-1.5 text-[12px]"
+              >
+                <Send size={12} />
+                {sendLoading
+                  ? (language === 'fr' ? 'Envoi...' : 'Sending...')
+                  : isDraft
+                    ? (language === 'fr' ? 'Envoyer' : 'Send Invoice')
+                    : (language === 'fr' ? 'Renvoyer' : 'Resend')}
+              </button>
+            )}
+
+            {/* PDF */}
+            <button
+              type="button"
+              className="glass-button inline-flex items-center gap-1.5 text-[12px]"
+              onClick={() => {
+                try {
+                  downloadInvoicePdf(detailsQuery.data!, companyQuery.data);
+                  toast.success(language === 'fr' ? 'PDF téléchargé' : 'PDF downloaded');
+                } catch {
+                  toast.error(language === 'fr' ? 'Erreur PDF' : 'Failed to generate PDF');
+                }
+              }}
+            >
+              <Download size={12} />
+              PDF
+            </button>
+
+            {/* Preview Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowVisualPreview(!showVisualPreview)}
+              className={cn(
+                'glass-button inline-flex items-center gap-1.5 text-[12px]',
+                showVisualPreview && 'bg-primary/10 text-primary',
+              )}
+            >
+              <Eye size={12} />
+              {language === 'fr' ? 'Aperçu' : 'Preview'}
+            </button>
+
+            {/* Copy Link */}
+            {invoice.view_token && (
+              <button
+                type="button"
+                className="glass-button inline-flex items-center gap-1.5 text-[12px]"
+                onClick={() => {
+                  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+                  const link = `${API_BASE}/q/${invoice.view_token}`;
+                  navigator.clipboard.writeText(link);
+                  setLinkCopied(true);
+                  toast.success(language === 'fr' ? 'Lien copié !' : 'Link copied!');
+                  setTimeout(() => setLinkCopied(false), 2000);
+                }}
+              >
+                {linkCopied ? <Check size={12} /> : <Link2 size={12} />}
+                {linkCopied ? (language === 'fr' ? 'Copié' : 'Copied') : (language === 'fr' ? 'Lien' : 'Link')}
+              </button>
+            )}
+
+            {/* Payment actions */}
+            {canPayNow && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsRequestPaymentOpen(true)}
+                  className="glass-button inline-flex items-center gap-1.5 text-[12px] bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  <Send size={12} />
+                  {language === 'fr' ? 'Demander paiement' : 'Request Payment'}
+                </button>
+                <button type="button" onClick={() => setIsPaymentModalOpen(true)} className="glass-button-primary">
+                  {t.invoiceDetails.payNow}
+                </button>
+              </>
+            )}
+
+            {/* More actions dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setActionsOpen(!actionsOpen)}
+                className="glass-button !p-2"
+              >
+                <MoreHorizontal size={14} />
+              </button>
+              <AnimatePresence>
+                {actionsOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setActionsOpen(false)} />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-xl border border-outline bg-surface py-1 shadow-xl"
+                    >
+                      <button
+                        type="button"
+                        onClick={handleDuplicate}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-surface-secondary"
+                      >
+                        <CopyPlus size={12} />
+                        {language === 'fr' ? 'Dupliquer' : 'Duplicate'}
+                      </button>
+                      {!isPaid && !isVoid && invoice.balance_cents > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleMarkPaid}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-xs text-green-600 hover:bg-surface-secondary"
+                        >
+                          <CheckCircle2 size={12} />
+                          {language === 'fr' ? 'Marquer payée' : 'Mark as Paid'}
+                        </button>
+                      )}
+                      {!isPaid && !isVoid && (
+                        <button
+                          type="button"
+                          onClick={handleVoid}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-xs text-danger hover:bg-surface-secondary"
+                        >
+                          <Ban size={12} />
+                          {language === 'fr' ? 'Annuler' : 'Void Invoice'}
+                        </button>
+                      )}
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
+
             <StatusBadge status={uiStatus} />
           </div>
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="space-y-1">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-text-tertiary">Client</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-text-tertiary">{t.invoiceDetails.client}</p>
             <p className="text-[13px] font-bold text-text-primary">
               {client ? toClientDisplayName(client) : invoice.client_name}
             </p>
-            <p className="text-[13px] text-text-secondary">{client?.email || 'No email'}</p>
-            <p className="text-[13px] text-text-secondary">{client?.phone || 'No phone'}</p>
+            <p className="text-[13px] text-text-secondary">{client?.email || t.common.noEmail}</p>
+            <p className="text-[13px] text-text-secondary">{client?.phone || t.common.noPhone}</p>
           </div>
           <div className="space-y-1">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-text-tertiary">Dates</p>
-            <p className="text-[13px] text-text-secondary">Created: {formatDate(invoice.created_at)}</p>
-            <p className="text-[13px] text-text-secondary">Due: {invoice.due_date ? formatDate(invoice.due_date) : '-'}</p>
-            <p className="text-[13px] text-text-secondary">Issued: {invoice.issued_at ? formatDate(invoice.issued_at) : '-'}</p>
-            <p className="text-[13px] text-text-secondary">Paid: {invoice.paid_at ? formatDate(invoice.paid_at) : '-'}</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-text-tertiary">{t.invoiceDetails.dates}</p>
+            <p className="text-[13px] text-text-secondary">{`${t.invoiceDetails.created}:`} {formatDate(invoice.created_at)}</p>
+            <p className="text-[13px] text-text-secondary">{`${t.invoiceDetails.due}:`} {invoice.due_date ? formatDate(invoice.due_date) : '-'}</p>
+            <p className="text-[13px] text-text-secondary">{`${t.invoiceDetails.issued}:`} {invoice.issued_at ? formatDate(invoice.issued_at) : '-'}</p>
+            <p className="text-[13px] text-text-secondary">{`${t.invoiceDetails.paid}:`} {invoice.paid_at ? formatDate(invoice.paid_at) : '-'}</p>
             {invoice.job_id ? (
               <button
                 type="button"
                 className="glass-button mt-2"
                 onClick={() => navigate(`/jobs/${invoice.job_id}`)}
               >
-                Linked job: open #{String(invoice.job_id).slice(0, 8)}
+                {`${t.invoiceDetails.linkedJob} #${String(invoice.job_id).slice(0, 8)}`}
               </button>
             ) : null}
+          </div>
+        </div>
+
+        {/* View Tracking */}
+        {invoice.status !== 'draft' && (
+          <div className="mt-5 flex items-center gap-3 p-3 rounded-xl border border-outline-subtle bg-surface-secondary">
+            <div className={cn(
+              "w-8 h-8 rounded-lg flex items-center justify-center",
+              invoice.is_viewed ? "bg-success/10 text-success" : "bg-surface-tertiary text-text-tertiary"
+            )}>
+              {invoice.is_viewed ? <Eye size={16} /> : <EyeOff size={16} />}
+            </div>
+            <div className="flex-1">
+              <p className={cn(
+                "text-[13px] font-semibold",
+                invoice.is_viewed ? "text-success" : "text-text-tertiary"
+              )}>
+                {invoice.is_viewed
+                  ? (language === 'fr' ? 'Ouvert par le client' : 'Opened by client')
+                  : (language === 'fr' ? 'Pas encore ouvert' : 'Not opened yet')}
+              </p>
+              {invoice.is_viewed && (
+                <p className="text-[11px] text-text-tertiary">
+                  {language === 'fr' ? 'Première ouverture' : 'First opened'}: {formatDate(invoice.viewed_at || '')}
+                  {(invoice.view_count || 0) > 1 && (
+                    <> · {invoice.view_count} {language === 'fr' ? 'vues' : 'views'}</>
+                  )}
+                  {invoice.last_viewed_at && invoice.last_viewed_at !== invoice.viewed_at && (
+                    <> · {language === 'fr' ? 'Dernière' : 'Last'}: {formatDate(invoice.last_viewed_at)}</>
+                  )}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Recurring Invoice */}
+        <div className="mt-5 flex items-center gap-3 p-3 rounded-xl border border-outline-subtle bg-surface-secondary">
+          <div className={cn(
+            "w-8 h-8 rounded-lg flex items-center justify-center",
+            (invoice as any).is_recurring ? "bg-primary/10 text-primary" : "bg-surface-tertiary text-text-tertiary"
+          )}>
+            <RefreshCw size={16} />
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center justify-between">
+              <p className="text-[13px] font-semibold text-text-primary">
+                {language === 'fr' ? 'Facturation récurrente' : 'Recurring Invoice'}
+              </p>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!(invoice as any).is_recurring}
+                  disabled={recurringLoading}
+                  onChange={async (e) => {
+                    const checked = e.target.checked;
+                    setRecurringLoading(true);
+                    try {
+                      const updateData: any = { is_recurring: checked };
+                      if (!checked) {
+                        updateData.recurrence_interval = null;
+                        updateData.next_recurrence_date = null;
+                      } else {
+                        // Default to monthly, set next recurrence to 1 month from today
+                        updateData.recurrence_interval = 'monthly';
+                        const next = new Date();
+                        next.setMonth(next.getMonth() + 1);
+                        updateData.next_recurrence_date = next.toISOString().slice(0, 10);
+                      }
+                      const { error } = await supabase
+                        .from('invoices')
+                        .update(updateData)
+                        .eq('id', invoice.id);
+                      if (error) throw error;
+                      queryClient.invalidateQueries({ queryKey: ['invoiceDetails', invoiceId] });
+                      toast.success(checked
+                        ? (language === 'fr' ? 'Récurrence activée' : 'Recurring enabled')
+                        : (language === 'fr' ? 'Récurrence désactivée' : 'Recurring disabled'));
+                    } catch (err: any) {
+                      toast.error(err.message || 'Failed to update');
+                    } finally {
+                      setRecurringLoading(false);
+                    }
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-surface-tertiary rounded-full peer peer-checked:bg-primary transition-colors after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+              </label>
+            </div>
+
+            {(invoice as any).is_recurring && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  value={(invoice as any).recurrence_interval || 'monthly'}
+                  disabled={recurringLoading}
+                  onChange={async (e) => {
+                    const interval = e.target.value;
+                    setRecurringLoading(true);
+                    try {
+                      // Compute next date based on interval from today
+                      const next = new Date();
+                      switch (interval) {
+                        case 'weekly': next.setDate(next.getDate() + 7); break;
+                        case 'biweekly': next.setDate(next.getDate() + 14); break;
+                        case 'monthly': next.setMonth(next.getMonth() + 1); break;
+                        case 'quarterly': next.setMonth(next.getMonth() + 3); break;
+                        case 'yearly': next.setFullYear(next.getFullYear() + 1); break;
+                      }
+                      const { error } = await supabase
+                        .from('invoices')
+                        .update({
+                          recurrence_interval: interval,
+                          next_recurrence_date: next.toISOString().slice(0, 10),
+                        })
+                        .eq('id', invoice.id);
+                      if (error) throw error;
+                      queryClient.invalidateQueries({ queryKey: ['invoiceDetails', invoiceId] });
+                      toast.success(language === 'fr' ? 'Intervalle mis à jour' : 'Interval updated');
+                    } catch (err: any) {
+                      toast.error(err.message || 'Failed to update');
+                    } finally {
+                      setRecurringLoading(false);
+                    }
+                  }}
+                  className="glass-input !py-1 text-xs"
+                >
+                  <option value="weekly">{language === 'fr' ? 'Hebdomadaire' : 'Weekly'}</option>
+                  <option value="biweekly">{language === 'fr' ? 'Aux 2 semaines' : 'Biweekly'}</option>
+                  <option value="monthly">{language === 'fr' ? 'Mensuel' : 'Monthly'}</option>
+                  <option value="quarterly">{language === 'fr' ? 'Trimestriel' : 'Quarterly'}</option>
+                  <option value="yearly">{language === 'fr' ? 'Annuel' : 'Yearly'}</option>
+                </select>
+                {(invoice as any).next_recurrence_date && (
+                  <span className="text-[11px] text-text-tertiary">
+                    {language === 'fr' ? 'Prochaine :' : 'Next:'} {formatDate((invoice as any).next_recurrence_date)}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {(invoice as any).parent_invoice_id && (
+              <p className="mt-1 text-[11px] text-text-tertiary">
+                {language === 'fr' ? 'Générée depuis une facture récurrente' : 'Generated from a recurring invoice'}
+              </p>
+            )}
           </div>
         </div>
       </section>
 
       <section className="section-card p-6">
-        <h2 className="text-[15px] font-bold text-text-primary">Line items</h2>
+        <h2 className="text-[15px] font-bold text-text-primary">{t.invoiceDetails.lineItems}</h2>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-left">
             <thead className="border-b border-border">
               <tr>
-                <th className="px-2 py-2 text-sm font-bold">Description</th>
-                <th className="px-2 py-2 text-sm font-bold">Qty</th>
-                <th className="px-2 py-2 text-right text-sm font-bold">Unit</th>
-                <th className="px-2 py-2 text-right text-sm font-bold">Line total</th>
+                <th className="px-2 py-2 text-sm font-bold">{t.invoiceDetails.description}</th>
+                <th className="px-2 py-2 text-sm font-bold">{t.invoiceDetails.qty}</th>
+                <th className="px-2 py-2 text-right text-sm font-bold">{t.invoiceDetails.unit}</th>
+                <th className="px-2 py-2 text-right text-sm font-bold">{t.invoiceDetails.lineTotal}</th>
               </tr>
             </thead>
             <tbody>
@@ -123,7 +510,7 @@ export default function InvoiceDetails() {
               {items.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-2 py-6 text-center text-sm text-text-secondary">
-                    No items on this invoice.
+                    {t.invoiceDetails.noItems}
                   </td>
                 </tr>
               ) : null}
@@ -131,29 +518,42 @@ export default function InvoiceDetails() {
           </table>
         </div>
 
-        <div className="mt-4 ml-auto w-full max-w-xs space-y-1 rounded-xl border-[1.5px] border-outline-subtle bg-surface-secondary p-3">
+        <div className="mt-4 ml-auto w-full max-w-xs space-y-1 rounded-xl border border-outline-subtle bg-surface-secondary p-3">
           <p className="flex items-center justify-between text-sm">
-            <span className="text-text-secondary">Subtotal</span>
+            <span className="text-text-secondary">{t.invoiceDetails.subtotal}</span>
             <span className="font-semibold">{formatMoneyFromCents(invoice.subtotal_cents, invoice.currency || 'CAD')}</span>
           </p>
           <p className="flex items-center justify-between text-sm">
-            <span className="text-text-secondary">Tax</span>
+            <span className="text-text-secondary">{t.invoiceDetails.tax}</span>
             <span className="font-semibold">{formatMoneyFromCents(invoice.tax_cents, invoice.currency || 'CAD')}</span>
           </p>
           <p className="flex items-center justify-between border-t border-outline-subtle pt-2 text-base">
-            <span className="font-semibold text-text-primary">Total</span>
+            <span className="font-semibold text-text-primary">{t.common.total}</span>
             <span className="font-semibold text-text-primary">{formatMoneyFromCents(invoice.total_cents, invoice.currency || 'CAD')}</span>
           </p>
           <p className="flex items-center justify-between text-sm">
-            <span className="text-text-secondary">Paid</span>
+            <span className="text-text-secondary">{t.invoiceDetails.paid}</span>
             <span className="font-semibold">{formatMoneyFromCents(invoice.paid_cents, invoice.currency || 'CAD')}</span>
           </p>
           <p className="flex items-center justify-between text-sm">
-            <span className="text-text-secondary">Balance</span>
+            <span className="text-text-secondary">{t.invoiceDetails.balance}</span>
             <span className="font-semibold">{formatMoneyFromCents(invoice.balance_cents, invoice.currency || 'CAD')}</span>
           </p>
         </div>
       </section>
+
+      {/* Visual Invoice Preview */}
+      {showVisualPreview && (
+        <section className="section-card overflow-hidden">
+          <div className="bg-gray-100 p-6">
+            <div className="mx-auto max-w-[600px] rounded-xl bg-white p-8 shadow-lg">
+              <InvoiceRenderer data={renderData} layout={previewLayout} />
+            </div>
+          </div>
+        </section>
+      )}
+
+      <ActivityTimeline entityType="invoice" entityId={invoiceId} />
 
       <InvoicePaymentModal
         open={isPaymentModalOpen}
@@ -171,6 +571,20 @@ export default function InvoiceDetails() {
           queryClient.invalidateQueries({ queryKey: ['insightsOverview'] });
           queryClient.invalidateQueries({ queryKey: ['insightsRevenueSeries'] });
           queryClient.invalidateQueries({ queryKey: ['insightsInvoicesSummary'] });
+        }}
+      />
+
+      <RequestPaymentModal
+        open={isRequestPaymentOpen}
+        onClose={() => setIsRequestPaymentOpen(false)}
+        invoiceId={invoice.id}
+        invoiceNumber={invoice.invoice_number}
+        balanceCents={invoice.balance_cents}
+        currency={invoice.currency || 'CAD'}
+        clientEmail={client?.email}
+        clientPhone={client?.phone}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['invoiceDetails', invoiceId] });
         }}
       />
     </div>

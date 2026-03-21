@@ -17,19 +17,25 @@ import { Lead } from '../types';
 import { formatCurrency, formatDate, cn } from '../lib/utils';
 import Papa from 'papaparse';
 import NewLeadModal from '../components/NewLeadModal';
-import { EmailConflictRecord, convertLeadToClient, createLeadScoped, deleteLeadScoped, exportAllLeadsCsv, fetchLeadsScoped, findEmailConflict, updateLeadScoped } from '../lib/leadsApi';
+import { EmailConflictRecord, convertLeadToClient, createLeadScoped, deleteLeadScoped, exportAllLeadsCsv, fetchLeadsScoped, findEmailConflict, updateLeadScoped, updateLeadStatus, LEAD_STATUS_LABELS, type LeadStatus } from '../lib/leadsApi';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { PageHeader, StatCard, EmptyState } from '../components/ui';
 import { FilterSelect } from '../components/ui/FilterBar';
 import StatusBadge from '../components/ui/StatusBadge';
+import { useTranslation } from '../i18n';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import QuickActions from '../components/QuickActions';
+import BulkActionBar, { type BulkAction } from '../components/BulkActionBar';
+import { Trash2 as TrashBulk, Send as SendBulk, Archive } from 'lucide-react';
 
 type SortBy = 'recent' | 'oldest';
 
-const STATUS_OPTIONS = ['All', 'Lead', 'Qualified', 'Proposal', 'Negotiation', 'Closed'];
+const STATUS_OPTIONS = ['All', 'New', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Closed', 'Lost'];
 
 export default function Leads() {
   const navigate = useNavigate();
+  const { t, language } = useTranslation();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -66,6 +72,12 @@ export default function Leads() {
 
   const [isAutoConverting, setIsAutoConverting] = useState(false);
 
+  // Escape key closes drawer/modal
+  useEscapeKey(() => {
+    if (selectedLead) { setSelectedLead(null); return; }
+    if (isNewLeadModalOpen) { setIsNewLeadModalOpen(false); return; }
+  }, !!(selectedLead || isNewLeadModalOpen));
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(searchQuery.trim());
@@ -76,6 +88,13 @@ export default function Leads() {
   useEffect(() => {
     fetchLeads();
   }, [sortBy, statusFilter, sourceFilter, assignedFilter, debouncedSearch]);
+
+  // Listen for command palette create event
+  useEffect(() => {
+    const handler = () => setIsNewLeadModalOpen(true);
+    window.addEventListener('crm:open-new-lead', handler);
+    return () => window.removeEventListener('crm:open-new-lead', handler);
+  }, []);
 
   useEffect(() => {
     if (!selectedLead) return;
@@ -103,7 +122,7 @@ export default function Leads() {
       });
       setLeads(data);
     } catch (error: any) {
-      setListError(error?.message || 'Failed to load leads.');
+      setListError(error?.message || t.leads.failedLoad);
     } finally {
       setLoading(false);
     }
@@ -134,7 +153,7 @@ export default function Leads() {
         if (conflict && conflict.kind === 'lead') {
           setPendingLeadPayload(leadData);
           setEmailConflict(conflict);
-          setCreateError('Un lead avec ce email existe deja. Choisis Ajouter, Remplacer ou Annuler.');
+          setCreateError(t.leads.emailConflictChoose);
           throw new Error('EMAIL_CONFLICT');
         }
       }
@@ -146,7 +165,7 @@ export default function Leads() {
 
       setIsNewLeadModalOpen(false);
       setLeads((prev) => [created, ...prev]);
-      setSaveSuccess('Lead saved successfully.');
+      setSaveSuccess(t.leads.leadSaved);
       window.dispatchEvent(new CustomEvent('crm:lead-created', { detail: { leadId: created.id } }));
       await fetchLeads();
     } catch (error: any) {
@@ -164,9 +183,9 @@ export default function Leads() {
             setEmailConflict(conflict);
           }
         }
-        setCreateError('Email deja utilise. Choisis Ajouter, Remplacer ou Annuler.');
+        setCreateError(t.leads.emailConflictChoose);
       } else {
-        setCreateError(message || 'Failed to save lead.');
+        setCreateError(message || t.leads.failedSave);
       }
       throw error;
     } finally {
@@ -189,12 +208,12 @@ export default function Leads() {
       if (!created?.id) throw new Error('Lead save failed: no lead id returned.');
       setIsNewLeadModalOpen(false);
       setLeads((prev) => [created, ...prev]);
-      setSaveSuccess('Lead added without duplicate email.');
+      setSaveSuccess(t.leads.addedWithoutDuplicate);
       window.dispatchEvent(new CustomEvent('crm:lead-created', { detail: { leadId: created.id } }));
       resolveConflictCancel();
       await fetchLeads();
     } catch (error: any) {
-      setCreateError(error?.message || 'Failed to add lead.');
+      setCreateError(error?.message || t.leads.failedSave);
     } finally {
       setIsResolvingConflict(false);
     }
@@ -214,12 +233,12 @@ export default function Leads() {
         value: Number(pendingLeadPayload.value || 0),
         status: String(pendingLeadPayload.status || 'Lead'),
       });
-      setSaveSuccess('Existing lead replaced.');
+      setSaveSuccess(t.leads.existingReplaced);
       setIsNewLeadModalOpen(false);
       resolveConflictCancel();
       await fetchLeads();
     } catch (error: any) {
-      setCreateError(error?.message || 'Failed to replace existing record.');
+      setCreateError(error?.message || t.leads.failedSave);
     } finally {
       setIsResolvingConflict(false);
     }
@@ -230,7 +249,7 @@ export default function Leads() {
     setEditError(null);
 
     if (!editFirstName.trim() || !editLastName.trim() || !editCompany.trim()) {
-      setEditError('First name, last name and lead title are required.');
+      setEditError(t.leads.requiredFields);
       return;
     }
 
@@ -250,7 +269,7 @@ export default function Leads() {
       setIsEditingLead(false);
     } catch (error: any) {
       console.error('Lead update failed:', error);
-      setEditError(error?.message || 'Failed to update lead.');
+      setEditError(error?.message || t.leads.failedSave);
     } finally {
       setIsUpdatingLead(false);
     }
@@ -266,15 +285,25 @@ export default function Leads() {
       complete: async (results) => {
         try {
           const parsedRows = results.data as Record<string, string>[];
+          const seenEmails = new Set<string>();
+          let skipped = 0;
           for (const row of parsedRows) {
             const firstName = row.first_name || row.FirstName || '';
             const lastName = row.last_name || row.LastName || '';
             const company = row.company || row.Company || 'Imported lead';
             if (!firstName || !lastName) continue;
+            const email = (row.email || row.Email || '').trim().toLowerCase();
+            // Skip duplicates within CSV and against existing leads
+            if (email && seenEmails.has(email)) { skipped++; continue; }
+            if (email) {
+              const conflict = await findEmailConflict(email).catch(() => null);
+              if (conflict) { skipped++; seenEmails.add(email); continue; }
+              seenEmails.add(email);
+            }
             await createLeadScoped({
               first_name: firstName,
               last_name: lastName,
-              email: row.email || row.Email || '',
+              email: email || '',
               company,
               value: Number(row.value || row.Value || 0),
               status: 'Lead',
@@ -282,8 +311,12 @@ export default function Leads() {
             });
           }
           await fetchLeads();
-        } catch (error) {
+          if (skipped > 0) {
+            toast.info(`${skipped} duplicate${skipped > 1 ? 's' : ''} skipped`);
+          }
+        } catch (error: any) {
           console.error('Error importing leads:', error);
+          toast.error(error?.message || 'Import failed');
         } finally {
           setIsImporting(false);
         }
@@ -305,7 +338,7 @@ export default function Leads() {
 
   const deleteLead = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!window.confirm('Are you sure you want to delete this lead?')) return;
+    if (!window.confirm(t.leads.confirmDelete)) return;
 
     const previousLeads = leads;
     const previousSelected = selectedLead;
@@ -317,20 +350,22 @@ export default function Leads() {
     try {
       await deleteLeadScoped(id);
       window.dispatchEvent(new CustomEvent('crm:lead-deleted', { detail: { leadId: id } }));
-      toast.success('Lead deleted.');
+      toast.success(t.leads.leadDeleted);
     } catch (error: any) {
       console.error('Error deleting lead:', error);
       setLeads(previousLeads);
       setSelectedLead(previousSelected);
       setSelectedLeads(previousSelectedIds);
-      setListError(error?.message || 'Failed to delete lead.');
-      toast.error(error?.message || 'Failed to delete lead.');
+      setListError(error?.message || t.leads.failedDelete);
+      toast.error(error?.message || t.leads.failedDelete);
+    } finally {
+      void fetchLeads();
     }
   };
 
   const deleteSelected = async () => {
     if (!selectedLeads.length) return;
-    if (!window.confirm(`Are you sure you want to delete ${selectedLeads.length} leads?`)) return;
+    if (!window.confirm(t.leads.confirmDeleteMultiple.replace('{count}', String(selectedLeads.length)))) return;
 
     const idsToDelete = [...selectedLeads];
     const previousLeads = leads;
@@ -346,13 +381,15 @@ export default function Leads() {
           window.dispatchEvent(new CustomEvent('crm:lead-deleted', { detail: { leadId: id } }));
         })
       );
-      toast.success(`${idsToDelete.length} lead(s) deleted.`);
+      toast.success(t.leads.leadsDeleted.replace('{count}', String(idsToDelete.length)));
     } catch (error: any) {
       setLeads(previousLeads);
       setSelectedLead(previousSelected);
       setSelectedLeads(idsToDelete);
-      setListError(error?.message || 'Failed to delete selected leads.');
-      toast.error(error?.message || 'Failed to delete selected leads.');
+      setListError(error?.message || t.leads.failedDelete);
+      toast.error(error?.message || t.leads.failedDelete);
+    } finally {
+      void fetchLeads();
     }
   };
 
@@ -364,9 +401,9 @@ export default function Leads() {
       const { lead } = await convertLeadToClient(selectedLead.id);
       setLeads((prev) => prev.map((item) => (item.id === lead.id ? lead : item)));
       setSelectedLead(lead);
-      setSaveSuccess('Lead converted to client successfully.');
+      setSaveSuccess(t.leads.leadConverted);
     } catch (error: any) {
-      setEditError(error?.message || 'Failed to convert lead.');
+      setEditError(error?.message || t.leads.failedConvert);
     } finally {
       setIsConverting(false);
     }
@@ -382,15 +419,15 @@ export default function Leads() {
       });
       if (error) throw error;
       const result = data as any;
-      toast.success('Lead auto-converted to client + deal + job.');
+      toast.success(t.leads.autoConverted);
       setSelectedLead(null);
       await fetchLeads();
       if (result?.job_id) {
         navigate(`/jobs/${result.job_id}`);
       }
     } catch (error: any) {
-      setEditError(error?.message || 'Failed to auto-convert lead.');
-      toast.error(error?.message || 'Failed to auto-convert lead.');
+      setEditError(error?.message || t.leads.failedAutoConvert);
+      toast.error(error?.message || t.leads.failedAutoConvert);
     } finally {
       setIsAutoConverting(false);
     }
@@ -412,10 +449,10 @@ export default function Leads() {
       link.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`;
       link.click();
       URL.revokeObjectURL(url);
-      toast.success('Leads exported.');
+      toast.success(t.leads.leadsExported);
     } catch (error: any) {
-      setListError(error?.message || 'Failed to export leads.');
-      toast.error(error?.message || 'Failed to export leads.');
+      setListError(error?.message || t.leads.failedExport);
+      toast.error(error?.message || t.leads.failedExport);
     } finally {
       setIsExporting(false);
     }
@@ -423,29 +460,29 @@ export default function Leads() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Leads" subtitle={`${leads.length} prospects`} icon={Contact} iconColor="pink">
+      <PageHeader title={t.leads.title} subtitle={`${leads.length} ${t.leads.prospects}`} icon={Contact} iconColor="pink">
         <div className="flex items-center gap-2">
           <label className="glass-button inline-flex items-center gap-1.5 cursor-pointer">
             <Upload size={14} />
-            {isImporting ? 'Importing...' : 'Import'}
+            {isImporting ? t.common.importing : t.common.import}
             <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
           </label>
           <button onClick={() => void handleExport()} disabled={isExporting} className="glass-button inline-flex items-center gap-1.5">
             <Download size={14} />
-            {isExporting ? 'Exporting...' : 'Export'}
+            {isExporting ? t.common.exporting : t.common.export}
           </button>
           <button onClick={() => setIsNewLeadModalOpen(true)} className="glass-button-primary inline-flex items-center gap-1.5">
             <Plus size={14} />
-            Add Lead
+            {t.leads.addLead}
           </button>
         </div>
       </PageHeader>
 
       {/* KPIs */}
       <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Total Leads" value={leads.length} iconColor="pink" />
-        <StatCard label="Qualified" value={leads.filter((l) => l.status === 'Qualified').length} iconColor="green" />
-        <StatCard label="Total Value" value={formatCurrency(leads.reduce((s, l) => s + (l.value || 0), 0))} iconColor="amber" />
+        <StatCard label={t.leads.totalLeads} value={leads.length} iconColor="pink" />
+        <StatCard label={t.leads.qualified} value={leads.filter((l) => l.status === 'Qualified').length} iconColor="green" />
+        <StatCard label={t.leads.totalValue} value={formatCurrency(leads.reduce((s, l) => s + (l.value || 0), 0))} iconColor="amber" />
       </div>
 
       {saveSuccess && (
@@ -481,15 +518,15 @@ export default function Leads() {
             value={sortBy}
             onChange={(v) => setSortBy(v as SortBy)}
             options={[
-              { value: 'recent', label: 'Most recent' },
-              { value: 'oldest', label: 'Oldest first' },
+              { value: 'recent', label: t.common.mostRecent },
+              { value: 'oldest', label: t.common.oldestFirst },
             ]}
           />
         </div>
         <div className="relative w-full max-w-xs">
           <input
             type="text"
-            placeholder="Search leads..."
+            placeholder={t.leads.searchLeads}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="glass-input w-full"
@@ -506,10 +543,10 @@ export default function Leads() {
             exit={{ opacity: 0, y: -8 }}
             className="flex items-center gap-3 rounded-md bg-primary/5 border border-primary/10 px-4 py-2"
           >
-            <span className="text-[13px] font-medium text-primary">{selectedLeads.length} selected</span>
+            <span className="text-[13px] font-medium text-primary">{selectedLeads.length} {t.common.selected}</span>
             <button onClick={deleteSelected} className="glass-button-danger inline-flex items-center gap-1.5 text-xs">
               <Trash2 size={13} />
-              Delete
+              {t.common.delete}
             </button>
           </motion.div>
         )}
@@ -529,11 +566,11 @@ export default function Leads() {
                     className="rounded border-border"
                   />
                 </th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Name</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Company</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Status</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Value</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Date Added</th>
+                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">{t.common.name}</th>
+                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">{t.common.company}</th>
+                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">{t.common.status}</th>
+                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">{t.common.value}</th>
+                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">{t.common.dateAdded}</th>
                 <th className="px-4 py-3 w-10"></th>
               </tr>
             </thead>
@@ -588,7 +625,31 @@ export default function Leads() {
                       </p>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={lead.status} />
+                      <select
+                        value={lead.status}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={async (e) => {
+                          e.stopPropagation();
+                          const newStatus = e.target.value as LeadStatus;
+                          const dbStatus = Object.entries(LEAD_STATUS_LABELS).find(([, v]) => v === newStatus)?.[0] || newStatus.toLowerCase().replace(/ /g, '_').replace(/-/g, '_');
+                          const previousStatus = lead.status;
+                          // Optimistic update
+                          setLeads((prev) => prev.map((l) => l.id === lead.id ? { ...l, status: newStatus } : l));
+                          try {
+                            await updateLeadStatus(lead.id, dbStatus as LeadStatus);
+                            toast.success(`Status updated to ${newStatus}`);
+                          } catch (err: any) {
+                            // Revert on failure
+                            setLeads((prev) => prev.map((l) => l.id === lead.id ? { ...l, status: previousStatus } : l));
+                            toast.error(err.message);
+                          }
+                        }}
+                        className="text-xs font-medium rounded-lg border border-outline bg-surface px-2 py-1 cursor-pointer hover:border-primary/40 transition-colors"
+                      >
+                        {STATUS_OPTIONS.filter((s) => s !== 'All').map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="px-4 py-3">
                       <p className="text-[13px] font-medium text-text-primary tabular-nums">{formatCurrency(lead.value || 0)}</p>
@@ -600,7 +661,7 @@ export default function Leads() {
                       <button
                         onClick={(e) => deleteLead(lead.id, e)}
                         className="p-1.5 text-text-tertiary hover:text-danger hover:bg-danger-light rounded transition-all"
-                        title="Delete Lead"
+                        title={t.common.delete}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -610,7 +671,16 @@ export default function Leads() {
               {noResults && (
                 <tr>
                   <td colSpan={7} className="px-4 py-10">
-                    <EmptyState icon={Users} title="No leads found" description="Try adjusting search or filters." />
+                    <EmptyState
+                      icon={Users}
+                      title={t.leads.noLeadsFound}
+                      description={leads.length === 0 ? (language === 'fr' ? 'Commencez par creer votre premier lead.' : 'Get started by creating your first lead.') : t.leads.tryAdjusting}
+                      action={leads.length === 0 ? (
+                        <button onClick={() => setIsNewLeadModalOpen(true)} className="glass-button-primary mt-3 inline-flex items-center gap-1.5 text-[13px]">
+                          <Plus size={14} /> {t.leads.newLead}
+                        </button>
+                      ) : undefined}
+                    />
                   </td>
                 </tr>
               )}
@@ -643,22 +713,22 @@ export default function Leads() {
               className="modal-content max-w-md"
             >
               <div className="p-5">
-                <h3 className="text-[15px] font-semibold text-text-primary">Email deja existant</h3>
+                <h3 className="text-[15px] font-semibold text-text-primary">{t.leads.emailConflictTitle}</h3>
                 <p className="mt-2 text-[13px] text-text-secondary">
-                  Un lead existe deja avec <span className="font-medium text-text-primary">{emailConflict.email}</span>.
+                  {t.leads.emailConflictMsg} <span className="font-medium text-text-primary">{emailConflict.email}</span>
                 </p>
                 <p className="mt-1 text-xs text-text-tertiary">
                   {emailConflict.first_name || ''} {emailConflict.last_name || ''}
                 </p>
                 <div className="mt-5 flex items-center justify-end gap-2">
                   <button onClick={resolveConflictCancel} disabled={isResolvingConflict} className="glass-button">
-                    Annuler
+                    {t.common.cancel}
                   </button>
                   <button onClick={() => void resolveConflictAdd()} disabled={isResolvingConflict} className="glass-button">
-                    Ajouter
+                    {t.common.addAnyway}
                   </button>
                   <button onClick={() => void resolveConflictReplace()} disabled={isResolvingConflict} className="glass-button-primary">
-                    Remplacer
+                    {t.common.replace}
                   </button>
                 </div>
               </div>
@@ -712,29 +782,29 @@ export default function Leads() {
                     className="glass-button inline-flex items-center gap-1.5"
                   >
                     <Edit2 size={13} />
-                    {isEditingLead ? 'Cancel' : 'Edit'}
+                    {isEditingLead ? t.common.cancel : t.common.edit}
                   </button>
                   <button
                     onClick={(e) => deleteLead(selectedLead.id, e)}
                     className="glass-button-danger inline-flex items-center gap-1.5"
                   >
                     <Trash2 size={13} />
-                    Delete
+                    {t.common.delete}
                   </button>
                   <button
                     onClick={handleConvertLead}
                     disabled={isConverting || !!selectedLead.converted_to_client_id}
                     className="glass-button inline-flex items-center gap-1.5 disabled:opacity-50"
                   >
-                    {selectedLead.converted_to_client_id ? 'Converted' : isConverting ? 'Converting...' : 'Convert'}
+                    {selectedLead.converted_to_client_id ? t.leads.converted : isConverting ? t.leads.converting : t.leads.convert}
                   </button>
                   <button
                     onClick={() => void handleAutoConvert()}
                     disabled={isAutoConverting || !!selectedLead.converted_to_client_id}
                     className="glass-button-primary inline-flex items-center gap-1.5 disabled:opacity-50"
-                    title="Auto-convert: creates client + deal + job in one click"
+                    title={t.leads.autoConvertTitle}
                   >
-                    {isAutoConverting ? 'Converting...' : 'Auto Deal+Job'}
+                    {isAutoConverting ? t.leads.converting : t.leads.autoDealJob}
                   </button>
                 </div>
 
@@ -743,21 +813,44 @@ export default function Leads() {
                     {/* Stats */}
                     <div className="grid grid-cols-2 gap-3">
                       <div className="section-card p-4">
-                        <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">Value</p>
+                        <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">{t.common.value}</p>
                         <p className="text-lg font-bold text-text-primary tabular-nums">{formatCurrency(selectedLead.value || 0)}</p>
                       </div>
                       <div className="section-card p-4">
-                        <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">Status</p>
-                        <StatusBadge status={selectedLead.status} />
+                        <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">{t.common.status}</p>
+                        <select
+                          value={selectedLead.status}
+                          onChange={async (e) => {
+                            const newStatus = e.target.value;
+                            const dbStatus = Object.entries(LEAD_STATUS_LABELS).find(([, v]) => v === newStatus)?.[0] || newStatus.toLowerCase().replace(/ /g, '_').replace(/-/g, '_');
+                            try {
+                              await updateLeadStatus(selectedLead.id, dbStatus as LeadStatus);
+                              const updated = { ...selectedLead, status: newStatus };
+                              setSelectedLead(updated);
+                              setLeads((prev) => prev.map((l) => l.id === selectedLead.id ? updated : l));
+                              toast.success(`Status updated to ${newStatus}`);
+                            } catch (err: any) {
+                              toast.error(err.message);
+                            }
+                          }}
+                          className="text-xs font-medium rounded-lg border border-outline bg-surface px-2 py-1 cursor-pointer hover:border-primary/40 transition-colors"
+                        >
+                          {STATUS_OPTIONS.filter((s) => s !== 'All').map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 
-                    {/* Contact */}
+                    {/* Contact + Quick Actions */}
                     <div className="section-card p-4 space-y-3">
-                      <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary">Contact Information</h3>
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary">{t.leads.contactInfo}</h3>
+                        <QuickActions phone={selectedLead.phone} email={selectedLead.email} size="sm" />
+                      </div>
                       <div className="flex items-center gap-3 text-[13px] text-text-secondary">
                         <Mail size={14} className="text-text-tertiary shrink-0" />
-                        {selectedLead.email || 'No email'}
+                        {selectedLead.email || t.common.noEmail}
                       </div>
                     </div>
                   </>
@@ -765,28 +858,28 @@ export default function Leads() {
 
                 {isEditingLead && (
                   <div className="section-card p-4 space-y-3">
-                    <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary">Edit Lead</h3>
+                    <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary">{t.leads.editLead}</h3>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">First name</label>
+                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.firstName}</label>
                         <input value={editFirstName} onChange={(e) => setEditFirstName(e.target.value)} className="glass-input w-full mt-1" />
                       </div>
                       <div>
-                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Last name</label>
+                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.lastName}</label>
                         <input value={editLastName} onChange={(e) => setEditLastName(e.target.value)} className="glass-input w-full mt-1" />
                       </div>
                     </div>
                     <div>
-                      <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Company</label>
+                      <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.company}</label>
                       <input value={editCompany} onChange={(e) => setEditCompany(e.target.value)} className="glass-input w-full mt-1" />
                     </div>
                     <div>
-                      <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Email</label>
+                      <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.email}</label>
                       <input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} className="glass-input w-full mt-1" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Status</label>
+                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.status}</label>
                         <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} className="glass-input w-full mt-1">
                           {STATUS_OPTIONS.filter((s) => s !== 'All').map((s) => (
                             <option key={s} value={s}>{s}</option>
@@ -794,23 +887,43 @@ export default function Leads() {
                         </select>
                       </div>
                       <div>
-                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Assigned to</label>
+                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.assignedTo}</label>
                         <input value={editAssignedTo} onChange={(e) => setEditAssignedTo(e.target.value)} className="glass-input w-full mt-1" placeholder="User ID" />
                       </div>
                     </div>
                     <div>
-                      <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Value</label>
+                      <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.value}</label>
                       <input type="number" min="0" value={editValue} onChange={(e) => setEditValue(e.target.value)} className="glass-input w-full mt-1" />
                     </div>
                     {editError && <p className="text-[13px] text-danger">{editError}</p>}
                     <button onClick={handleUpdateLead} disabled={isUpdatingLead} className="glass-button-primary w-full">
-                      {isUpdatingLead ? 'Saving...' : 'Save Changes'}
+                      {isUpdatingLead ? t.common.saving : t.common.save}
                     </button>
                   </div>
                 )}
               </div>
             </motion.div>
           </>
+        )}
+      </AnimatePresence>
+
+      {/* Bulk actions bar */}
+      <AnimatePresence>
+        {selectedLeads.length > 0 && (
+          <BulkActionBar
+            count={selectedLeads.length}
+            actions={[
+              { id: 'delete', label: language === 'fr' ? 'Supprimer' : 'Delete', icon: TrashBulk, variant: 'danger' },
+            ]}
+            onAction={async (actionId) => {
+              if (actionId === 'delete') {
+                if (!window.confirm(language === 'fr' ? `Supprimer ${selectedLeads.length} leads ?` : `Delete ${selectedLeads.length} leads?`)) return;
+                await deleteSelected();
+              }
+            }}
+            onClear={() => setSelectedLeads([])}
+            language={language}
+          />
         )}
       </AnimatePresence>
     </div>

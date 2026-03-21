@@ -34,6 +34,12 @@ export interface InvoiceRow {
   paid_cents: number;
   created_at: string;
   updated_at: string;
+  // View tracking
+  view_token?: string | null;
+  is_viewed?: boolean;
+  viewed_at?: string | null;
+  view_count?: number;
+  last_viewed_at?: string | null;
 }
 
 export interface InvoiceItemInput {
@@ -209,6 +215,9 @@ export async function listInvoices(query: InvoicesListQuery): Promise<InvoicesLi
       paid_cents: Number(row.paid_cents || 0),
       created_at: row.created_at,
       updated_at: row.updated_at,
+      is_viewed: !!(row as any).is_viewed,
+      viewed_at: (row as any).viewed_at || null,
+      view_count: Number((row as any).view_count || 0),
     })),
     total: rows.length > 0 ? Number(rows[0].total_count || 0) : 0,
   };
@@ -344,6 +353,11 @@ export async function getInvoiceById(invoiceId: string): Promise<InvoiceDetail |
       created_at: invoiceRow.created_at,
       updated_at: invoiceRow.updated_at,
       deleted_at: invoiceRow.deleted_at || null,
+      view_token: invoiceRow.view_token || null,
+      is_viewed: !!invoiceRow.is_viewed,
+      viewed_at: invoiceRow.viewed_at || null,
+      view_count: Number(invoiceRow.view_count || 0),
+      last_viewed_at: invoiceRow.last_viewed_at || null,
     },
     client: clientRow
       ? {
@@ -424,30 +438,209 @@ export async function sendInvoice(payload: {
   channels?: string[];
   toEmail?: string | null;
   toPhone?: string | null;
+  emailTemplateId?: string | null;
+  subject?: string | null;
+  body?: string | null;
 }): Promise<SendInvoiceResult> {
-  const channels = payload.channels && payload.channels.length > 0 ? payload.channels : ['email', 'sms'];
-  let lastRow: any = null;
-  for (const channel of channels) {
-    const toValue = channel === 'email' ? payload.toEmail || null : payload.toPhone || null;
-    if (!toValue) continue;
-    const { data, error } = await supabase.rpc('send_invoice', {
-      p_org_id: payload.orgId || null,
-      p_invoice_id: payload.invoiceId,
-      p_channel: channel,
-      p_to: toValue,
+  const channels = payload.channels && payload.channels.length > 0 ? payload.channels : ['email'];
+
+  // Use the backend email route for sending (the send_invoice RPC does not exist)
+  if (channels.includes('email') && payload.toEmail) {
+    const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
+    const API_BASE = import.meta.env.VITE_API_URL || '';
+    const response = await fetch(`${API_BASE}/api/emails/send-invoice`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        invoiceId: payload.invoiceId,
+        emailTemplateId: payload.emailTemplateId || null,
+        subject: payload.subject || null,
+        body: payload.body || null,
+      }),
     });
-    if (error) throw error;
-    lastRow = Array.isArray(data) ? data[0] : data;
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result?.error || `Failed to send invoice email (${response.status}).`);
+    }
   }
 
-  const row = lastRow || {};
+  // For SMS channel, use the communications API
+  if (channels.includes('sms') && payload.toPhone) {
+    const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
+    const API_BASE = import.meta.env.VITE_API_URL || '';
+    await fetch(`${API_BASE}/api/communications/send-sms`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        to: payload.toPhone,
+        body: `You have a new invoice. Please check your email for details.`,
+        client_id: null,
+        job_id: null,
+      }),
+    }).catch(() => {});
+  }
+
   return {
-    ok: Boolean(row?.ok ?? true),
-    invoice_id: String(row?.invoice_id || payload.invoiceId),
-    status: String(row?.status || 'sent'),
-    payment_link: row?.payment_link ? String(row.payment_link) : undefined,
+    ok: true,
+    invoice_id: payload.invoiceId,
+    status: 'sent',
     channels,
   };
+}
+
+// ── Invoice update/edit ──
+
+export async function updateInvoiceFields(
+  invoiceId: string,
+  fields: {
+    subject?: string | null;
+    due_date?: string | null;
+    notes?: string | null;
+    internal_notes?: string | null;
+    template_id?: string | null;
+  },
+) {
+  const { error } = await supabase
+    .from('invoices')
+    .update({ ...fields, updated_at: new Date().toISOString() })
+    .eq('id', invoiceId);
+  if (error) throw error;
+}
+
+export async function voidInvoice(invoiceId: string) {
+  const { error } = await supabase
+    .from('invoices')
+    .update({ status: 'void', updated_at: new Date().toISOString() })
+    .eq('id', invoiceId);
+  if (error) throw error;
+}
+
+export async function revertToDraft(invoiceId: string) {
+  const { error } = await supabase
+    .from('invoices')
+    .update({
+      status: 'draft',
+      issued_at: null,
+      sent_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', invoiceId);
+  if (error) throw error;
+}
+
+export async function duplicateInvoice(invoiceId: string): Promise<string> {
+  // Fetch original invoice
+  const detail = await getInvoiceById(invoiceId);
+  if (!detail) throw new Error('Invoice not found.');
+
+  // Create new draft
+  const draft = await createInvoiceDraft({
+    clientId: detail.invoice.client_id,
+    subject: detail.invoice.subject ? `${detail.invoice.subject} (Copy)` : null,
+    dueDate: null,
+  });
+
+  // Save items to new invoice
+  await saveInvoiceDraft({
+    invoiceId: draft.id,
+    subject: detail.invoice.subject ? `${detail.invoice.subject} (Copy)` : null,
+    dueDate: null,
+    taxCents: detail.invoice.tax_cents,
+    items: detail.items.map((item) => ({
+      description: item.description,
+      qty: item.qty,
+      unit_price_cents: item.unit_price_cents,
+    })),
+  });
+
+  return draft.id;
+}
+
+export async function markInvoicePaidManually(invoiceId: string) {
+  // Get current invoice to know total
+  const { data: inv, error: fetchErr } = await supabase
+    .from('invoices')
+    .select('total_cents')
+    .eq('id', invoiceId)
+    .single();
+  if (fetchErr) throw fetchErr;
+
+  const { error } = await supabase
+    .from('invoices')
+    .update({
+      paid_cents: inv.total_cents,
+      balance_cents: 0,
+      paid_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', invoiceId);
+  if (error) throw error;
+}
+
+// ── Job line items for invoice prefill ──
+
+export async function getJobLineItems(jobId: string) {
+  const { data, error } = await supabase
+    .from('job_line_items')
+    .select('id,name,qty,unit_price_cents,total_cents')
+    .eq('job_id', jobId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((item: any) => ({
+    id: item.id,
+    description: item.name || '',
+    qty: Number(item.qty || 0),
+    unit_price_cents: Number(item.unit_price_cents || 0),
+    line_total_cents: Number(item.total_cents || 0),
+    source_type: 'job_line_item' as const,
+    source_id: item.id,
+  }));
+}
+
+// ── Visual template listing with layout info ──
+
+export async function listVisualTemplates() {
+  const { data, error } = await supabase
+    .from('invoice_templates')
+    .select('id,name,slug,description,layout_type,is_default,is_system_template,branding,archived_at')
+    .is('archived_at', null)
+    .order('is_default', { ascending: false })
+    .order('name', { ascending: true });
+  if (error) throw error;
+  return (data || []) as Array<{
+    id: string;
+    name: string;
+    slug: string | null;
+    description: string;
+    layout_type: string;
+    is_default: boolean;
+    is_system_template: boolean;
+    branding: Record<string, any>;
+  }>;
+}
+
+// ── Send events history ──
+
+export async function getInvoiceSendEvents(invoiceId: string) {
+  const { data, error } = await supabase
+    .from('invoice_send_events')
+    .select('*')
+    .eq('invoice_id', invoiceId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+// ── Company settings for invoice rendering ──
+
+export async function getCompanySettings() {
+  const { data, error } = await supabase
+    .from('company_settings')
+    .select('company_name,company_email,company_phone,company_address,company_logo_url')
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data || { company_name: null, company_email: null, company_phone: null, company_address: null, company_logo_url: null };
 }
 
 export async function listInvoiceTemplates() {

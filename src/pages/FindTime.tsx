@@ -8,8 +8,10 @@ import { scheduleUnscheduledJob, DEFAULT_TIMEZONE } from '../lib/scheduleApi';
 import { cn } from '../lib/utils';
 import { PageHeader, StatCard, EmptyState } from '../components/ui';
 import { FilterSelect } from '../components/ui/FilterBar';
+import { useTranslation } from '../i18n';
 
 export default function FindTime() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [teamFilter, setTeamFilter] = useState<string>('all');
   const [durationFilter, setDurationFilter] = useState<number>(60);
@@ -38,23 +40,23 @@ export default function FindTime() {
   }, [slots]);
 
   async function handleBookSlot(slot: FreeSlot) {
-    if (!pendingJobId.trim()) { toast.error('Enter a Job ID to schedule.'); return; }
+    if (!pendingJobId.trim()) { toast.error(t.findTime.enterJobId); return; }
     setIsBooking(true);
     try {
       await scheduleUnscheduledJob({ jobId: pendingJobId.trim(), startAt: slot.start_time, endAt: slot.end_time, teamId: slot.team_id, timezone: DEFAULT_TIMEZONE });
-      toast.success('Job scheduled successfully.');
+      toast.success(t.findTime.jobScheduled);
       setBookingSlot(null);
       setPendingJobId('');
       queryClient.invalidateQueries({ queryKey: ['findTimeSlots'] });
-    } catch (error: any) { toast.error(error?.message || 'Failed to schedule job.');
+    } catch (error: any) { toast.error(error?.message || t.findTime.failedSchedule);
     } finally { setIsBooking(false); }
   }
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Find Time" subtitle="Browse available time slots">
+      <PageHeader title={t.findTime.title} subtitle={t.findTime.subtitle}>
         <button type="button" onClick={() => slotsQuery.refetch()} className="glass-button inline-flex items-center gap-1.5">
-          <RefreshCw size={14} /> Refresh
+          <RefreshCw size={14} /> {t.common.refresh}
         </button>
       </PageHeader>
 
@@ -64,7 +66,7 @@ export default function FindTime() {
           value={teamFilter}
           onChange={setTeamFilter}
           icon={<Filter size={13} />}
-          options={[{ value: 'all', label: 'All teams' }, ...teams.map((t) => ({ value: t.id, label: t.name }))]}
+          options={[{ value: 'all', label: t.findTime.allTeams }, ...teams.map((team) => ({ value: team.id, label: team.name }))]}
         />
         <FilterSelect
           value={String(durationFilter)}
@@ -83,30 +85,30 @@ export default function FindTime() {
           value={String(daysAhead)}
           onChange={(v) => setDaysAhead(Number(v))}
           options={[
-            { value: '7', label: 'Next 7 days' },
-            { value: '14', label: 'Next 14 days' },
-            { value: '30', label: 'Next 30 days' },
+            { value: '7', label: t.findTime.next7Days },
+            { value: '14', label: t.findTime.next14Days },
+            { value: '30', label: t.findTime.next30Days },
           ]}
         />
       </div>
 
       {/* Summary */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <StatCard label="Available slots" value={slots.length} />
-        <StatCard label="Days with openings" value={slotsByDay.length} />
-        <StatCard label="Teams available" value={new Set(slots.map((s) => s.team_id)).size} />
+        <StatCard label={t.findTime.availableSlots} value={slots.length} />
+        <StatCard label={t.findTime.daysWithOpenings} value={slotsByDay.length} />
+        <StatCard label={t.findTime.teamsAvailable} value={new Set(slots.map((s) => s.team_id)).size} />
       </div>
 
       {/* Quick book */}
       <div className="section-card p-4">
-        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Quick book: paste a Job ID</label>
+        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.findTime.quickBook}</label>
         <input
           value={pendingJobId}
           onChange={(e) => setPendingJobId(e.target.value)}
-          placeholder="Job UUID..."
+          placeholder={t.findTime.jobUuidPlaceholder}
           className="glass-input mt-1.5 w-full"
         />
-        <p className="mt-1.5 text-xs text-text-tertiary">Click a slot below to schedule this job at that time.</p>
+        <p className="mt-1.5 text-xs text-text-tertiary">{t.findTime.clickSlotToSchedule}</p>
       </div>
 
       {/* Slots */}
@@ -115,7 +117,7 @@ export default function FindTime() {
           {Array.from({ length: 3 }).map((_, i) => (<div key={i} className="h-24 skeleton" />))}
         </div>
       ) : slots.length === 0 ? (
-        <EmptyState icon={Clock} title="No available slots found" description="Set up team availability or adjust your filters." />
+        <EmptyState icon={Clock} title={t.findTime.noSlotsFound} description={t.findTime.setupAvailability} />
       ) : (
         <div className="space-y-5">
           {slotsByDay.map(([date, daySlots]) => (
@@ -156,21 +158,21 @@ export default function FindTime() {
         <div className="modal-overlay" onClick={() => setBookingSlot(null)}>
           <div className="modal-content max-w-md" onClick={(e) => e.stopPropagation()}>
             <div className="p-5">
-              <h3 className="text-[15px] font-semibold text-text-primary">Confirm scheduling</h3>
+              <h3 className="text-[15px] font-semibold text-text-primary">{t.findTime.confirmScheduling}</h3>
               <div className="mt-3 space-y-2 text-[13px] text-text-secondary">
-                <p><span className="font-medium text-text-primary">Team:</span> {bookingSlot.team_name}</p>
-                <p><span className="font-medium text-text-primary">Date:</span> {bookingSlot.day_label}</p>
+                <p><span className="font-medium text-text-primary">{`${t.findTime.team}:`}</span> {bookingSlot.team_name}</p>
+                <p><span className="font-medium text-text-primary">{`${t.findTime.date}:`}</span> {bookingSlot.day_label}</p>
                 <p>
-                  <span className="font-medium text-text-primary">Time:</span>{' '}
+                  <span className="font-medium text-text-primary">{`${t.findTime.time}:`}</span>{' '}
                   {new Date(bookingSlot.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} –{' '}
                   {new Date(bookingSlot.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </p>
-                <p><span className="font-medium text-text-primary">Job ID:</span> <span className="font-mono text-xs">{pendingJobId}</span></p>
+                <p><span className="font-medium text-text-primary">{`${t.findTime.jobId}:`}</span> <span className="font-mono text-xs">{pendingJobId}</span></p>
               </div>
               <div className="mt-5 flex justify-end gap-2">
-                <button type="button" className="glass-button" onClick={() => setBookingSlot(null)} disabled={isBooking}>Cancel</button>
+                <button type="button" className="glass-button" onClick={() => setBookingSlot(null)} disabled={isBooking}>{t.common.cancel}</button>
                 <button type="button" className="glass-button-primary" onClick={() => handleBookSlot(bookingSlot)} disabled={isBooking}>
-                  {isBooking ? 'Scheduling...' : 'Schedule'}
+                  {isBooking ? t.findTime.scheduling : t.findTime.schedule}
                 </button>
               </div>
             </div>

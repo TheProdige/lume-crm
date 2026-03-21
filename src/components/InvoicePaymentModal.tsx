@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from '../i18n';
 import { AlertTriangle, Loader2, X } from 'lucide-react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
@@ -31,6 +32,7 @@ function StripePaymentForm({
   amountLabel: string;
   onSuccess: () => void;
 }) {
+  const { t } = useTranslation();
   const stripe = useStripe();
   const elements = useElements();
   const [submitting, setSubmitting] = useState(false);
@@ -54,18 +56,18 @@ function StripePaymentForm({
     setSubmitting(false);
 
     if (result.error) {
-      setErrorMessage(result.error.message || 'Card payment failed.');
+      setErrorMessage(result.error.message || t.modals.cardPaymentFailed);
       return;
     }
 
     const status = result.paymentIntent?.status;
     if (status === 'succeeded' || status === 'processing' || status === 'requires_capture') {
-      toast.success('Payment submitted successfully.');
+      toast.success(t.modals.paymentSubmitted);
       onSuccess();
       return;
     }
 
-    toast.message('Payment submitted. Waiting for final confirmation.');
+    toast.message(t.modals.paymentPending);
     onSuccess();
   }
 
@@ -76,7 +78,7 @@ function StripePaymentForm({
         <p className="rounded-lg border border-danger bg-danger-light px-3 py-2 text-sm text-danger">{errorMessage}</p>
       ) : null}
       <button type="submit" disabled={submitting || !stripe || !elements} className="glass-button-primary w-full">
-        {submitting ? 'Processing card...' : `Pay ${amountLabel}`}
+        {submitting ? t.modals.processingCard : `${t.modals.pay} ${amountLabel}`}
       </button>
     </form>
   );
@@ -84,6 +86,7 @@ function StripePaymentForm({
 
 export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
   const { open, onClose, invoiceId, invoiceNumber, balanceCents, currency, onPaid } = props;
+  const { t } = useTranslation();
 
   const [settingsPayload, setSettingsPayload] = useState<PaymentSettingsResponse | null>(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
@@ -109,7 +112,7 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
         setSettingsPayload(payload);
       })
       .catch((error: Error) => {
-        setStatusError(error.message || 'Unable to load payment providers.');
+        setStatusError(error.message || t.modals.unableLoadProviders);
       })
       .finally(() => {
         setLoadingProviders(false);
@@ -184,11 +187,11 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
     setPaypalBusy(true);
     try {
       await capturePayPalOrder(orderId);
-      toast.success('PayPal payment captured.');
+      toast.success(t.modals.paypalCaptured);
       onPaid();
       onClose();
     } catch (error: any) {
-      toast.error(error?.message || 'PayPal capture failed.');
+      toast.error(error?.message || t.modals.paypalCaptureFailed);
     } finally {
       setPaypalBusy(false);
     }
@@ -206,8 +209,8 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
       <div className="glass w-full max-w-xl rounded-2xl border border-white/25 p-5">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-2xl font-semibold tracking-tight text-text-primary">Pay invoice #{invoiceNumber}</h3>
-            <p className="mt-1 text-sm text-text-secondary">Outstanding balance: {amountLabel}</p>
+            <h3 className="text-2xl font-semibold tracking-tight text-text-primary">{`${t.modals.payInvoice} #${invoiceNumber}`}</h3>
+            <p className="mt-1 text-sm text-text-secondary">{`${t.modals.outstandingBalance}: ${amountLabel}`}</p>
           </div>
           <button type="button" onClick={onClose} className="glass-button !p-2" aria-label="Close">
             <X size={16} />
@@ -217,7 +220,7 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
         {loadingProviders ? (
           <div className="flex min-h-[220px] items-center justify-center text-sm text-text-secondary">
             <Loader2 size={16} className="mr-2 animate-spin" />
-            Loading payment providers...
+            {t.modals.loadingProviders}
           </div>
         ) : null}
 
@@ -231,9 +234,9 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
               <div className="rounded-xl border border-warning bg-warning-light p-4 text-sm text-warning">
                 <p className="inline-flex items-center gap-2 font-medium">
                   <AlertTriangle size={14} />
-                  No payment provider is currently enabled.
+                  {t.modals.noProviderEnabled}
                 </p>
-                <p className="mt-2">Enable Stripe or PayPal in Payment settings before collecting invoice payments.</p>
+                <p className="mt-2">{t.modals.enableProviderMsg}</p>
               </div>
             ) : (
               <>
@@ -263,7 +266,7 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
 
                 {selectedProvider === 'stripe' ? (
                   <div className="space-y-3 rounded-xl border border-white/25 bg-surface/55 p-4">
-                    {stripeLoading ? <p className="text-sm text-text-secondary">Preparing secure card form...</p> : null}
+                    {stripeLoading ? <p className="text-sm text-text-secondary">{t.modals.preparingCardForm}</p> : null}
                     {stripeError ? (
                       <p className="rounded-lg border border-danger bg-danger-light px-3 py-2 text-sm text-danger">{stripeError}</p>
                     ) : null}
@@ -286,7 +289,7 @@ export default function InvoicePaymentModal(props: InvoicePaymentModalProps) {
                   <div className="space-y-3 rounded-xl border border-white/25 bg-surface/55 p-4">
                     {!paypalClientId ? (
                       <p className="rounded-lg border border-danger bg-danger-light px-3 py-2 text-sm text-danger">
-                        PayPal client id is missing from server configuration.
+                        {t.modals.paypalMissingClientId}
                       </p>
                     ) : (
                       <PayPalScriptProvider options={paypalScriptOptions as any}>

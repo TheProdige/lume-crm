@@ -48,7 +48,7 @@ export default function Modal({ open, onClose, title, description, children, siz
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg border-[1.5px] border-transparent text-text-tertiary hover:text-text-primary hover:bg-surface-tertiary hover:border-outline-subtle transition-all -mr-1 -mt-1"
+              className="p-1.5 rounded-lg border border-transparent text-text-tertiary hover:text-text-primary hover:bg-surface-tertiary hover:border-outline-subtle transition-all -mr-1 -mt-1"
             >
               <X size={14} />
             </button>

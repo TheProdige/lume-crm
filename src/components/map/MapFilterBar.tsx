@@ -35,7 +35,7 @@ export default function MapFilterBar({
             type="button"
             onClick={() => onDateRangeChange(chip.value)}
             className={cn(
-              'rounded-lg border-[1.5px] px-2.5 py-1 text-xs font-semibold transition-colors',
+              'rounded-lg border px-2.5 py-1 text-xs font-semibold transition-colors',
               dateRange === chip.value
                 ? 'border-text-primary bg-text-primary text-surface'
                 : 'border-outline-subtle bg-surface text-text-secondary hover:border-outline hover:bg-surface-secondary'
@@ -52,7 +52,7 @@ export default function MapFilterBar({
             type="button"
             onClick={onFitAll}
             title="Fit all jobs"
-            className="rounded-lg border-[1.5px] border-outline-subtle bg-surface p-1.5 text-text-tertiary hover:text-text-primary hover:border-outline transition-colors"
+            className="rounded-lg border border-outline-subtle bg-surface p-1.5 text-text-tertiary hover:text-text-primary hover:border-outline transition-colors"
           >
             <Maximize2 size={13} />
           </button>
@@ -63,7 +63,7 @@ export default function MapFilterBar({
             onClick={onRefresh}
             title="Refresh"
             className={cn(
-              'rounded-lg border-[1.5px] border-outline-subtle bg-surface p-1.5 text-text-tertiary hover:text-text-primary hover:border-outline transition-colors',
+              'rounded-lg border border-outline-subtle bg-surface p-1.5 text-text-tertiary hover:text-text-primary hover:border-outline transition-colors',
               loading && 'animate-spin'
             )}
           >

@@ -25,8 +25,12 @@ import {
   Plus,
   RefreshCw,
   Users,
+  UserPlus,
+  Clock,
+  X as XIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useTranslation } from '../i18n';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CRMMap } from '../components/map';
 import type { MapJobPin } from '../lib/mapApi';
@@ -44,6 +48,7 @@ import {
   rescheduleEvent,
   scheduleUnscheduledJob,
 } from '../lib/scheduleApi';
+import { findFreeSlots, type FreeSlot } from '../lib/availabilityApi';
 import { listTeams, TeamRecord } from '../lib/teamsApi';
 import { supabase } from '../lib/supabase';
 import { cn, formatCurrency } from '../lib/utils';
@@ -179,6 +184,7 @@ function needsAttention(event: ScheduleEventRecord) {
 }
 
 function ScheduleContent() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const calendarRef = useRef<FullCalendar | null>(null);
   const unscheduledRef = useRef<HTMLDivElement | null>(null);
@@ -202,6 +208,15 @@ function ScheduleContent() {
 
   const [isOpeningJob, setIsOpeningJob] = useState(false);
   const [activeFilter, setActiveFilter] = useState<ScheduleQuickFilter>('all');
+  const [teamPickerDrop, setTeamPickerDrop] = useState<{
+    jobId: string;
+    startAt: string;
+    endAt: string;
+    revert: () => void;
+    removeEvent: () => void;
+  } | null>(null);
+  const [teamSlots, setTeamSlots] = useState<Map<string, FreeSlot[]>>(new Map());
+  const [loadingSlots, setLoadingSlots] = useState(false);
 
   const currentDateKey = format(selectedDate, 'yyyy-MM-dd');
   const fullCalendarView = mapUiViewToCalendarView(view);
@@ -262,8 +277,8 @@ function ScheduleContent() {
 
   const unscheduledQuery = useQuery({
     queryKey: ['calendarUnscheduledJobs', orgId || 'none', teamsKey],
-    enabled: !!orgId && !noTeamsSelected,
-    queryFn: () => listUnscheduledJobs(effectiveTeamIds),
+    enabled: !!orgId,
+    queryFn: () => listUnscheduledJobs(noTeamsSelected ? [] : effectiveTeamIds),
   });
 
   const events = eventsQuery.data || [];
@@ -277,12 +292,12 @@ function ScheduleContent() {
   const needsAttentionCount = useMemo(() => events.filter((event) => needsAttention(event)).length, [events]);
   const filterChips: Array<{ id: ScheduleQuickFilter; label: string; count: number }> = useMemo(
     () => [
-      { id: 'all', label: 'All', count: events.length },
-      { id: 'ending_30', label: 'Ending within 30 days', count: endingWithin30Count },
-      { id: 'requires_invoicing', label: 'Requires invoicing', count: requiresInvoicingCount },
-      { id: 'needs_attention', label: 'Needs attention', count: needsAttentionCount },
+      { id: 'all', label: t.schedule.all, count: events.length },
+      { id: 'ending_30', label: t.schedule.endingWithin30, count: endingWithin30Count },
+      { id: 'requires_invoicing', label: t.schedule.requiresInvoicing, count: requiresInvoicingCount },
+      { id: 'needs_attention', label: t.schedule.needsAttention, count: needsAttentionCount },
     ],
-    [endingWithin30Count, events.length, needsAttentionCount, requiresInvoicingCount]
+    [endingWithin30Count, events.length, needsAttentionCount, requiresInvoicingCount, t]
   );
 
   const filteredEvents = useMemo(() => {
@@ -311,7 +326,7 @@ function ScheduleContent() {
 
       return {
         id: event.id,
-        title: event.job?.title || 'Untitled job',
+        title: event.job?.title || t.pipeline.untitledJob,
         start: event.start_at,
         end: event.end_at,
         backgroundColor: toRgba(teamColor, 0.16),
@@ -345,7 +360,7 @@ function ScheduleContent() {
           jobNumber: event.job?.job_number || '',
           latitude: latitude as number,
           longitude: longitude as number,
-          title: event.job?.title || 'Untitled job',
+          title: event.job?.title || t.pipeline.untitledJob,
           clientName: event.job?.client_name || null,
           address: event.job?.property_address || null,
           scheduledAt: event.start_at,
@@ -472,7 +487,7 @@ function ScheduleContent() {
     try {
       const draft = await getJobModalDraftById(jobId);
       if (!draft) {
-        toast.error('Job not found.');
+        toast.error(t.schedule.jobNotFound);
         return;
       }
 
@@ -484,7 +499,7 @@ function ScheduleContent() {
         },
       });
     } catch (error: any) {
-      toast.error(error?.message || 'Could not open job');
+      toast.error(error?.message || t.schedule.couldNotOpenJob);
     } finally {
       setIsOpeningJob(false);
     }
@@ -499,25 +514,82 @@ function ScheduleContent() {
       return;
     }
 
-    try {
-      const startAt = info.event.start || new Date();
-      const endAt = info.event.end || addHours(startAt, 2);
-      const draggedTeamId = (info.event.extendedProps.externalTeamId as string | null) || null;
-      const inferredTeamId = selectedTeamIds.length === 1 ? selectedTeamIds[0] : null;
+    const startAt = info.event.start || new Date();
+    const endAt = info.event.end || addHours(startAt, 2);
+    const draggedTeamId = (info.event.extendedProps.externalTeamId as string | null) || null;
+    const inferredTeamId = selectedTeamIds.length === 1 ? selectedTeamIds[0] : null;
+    const resolvedTeamId = draggedTeamId || inferredTeamId;
 
+    // If no team can be resolved and multiple teams exist, show team picker
+    if (!resolvedTeamId && teams.length > 1) {
+      setTeamPickerDrop({
+        jobId,
+        startAt: startAt.toISOString(),
+        endAt: endAt.toISOString(),
+        revert: () => info.revert(),
+        removeEvent: () => info.event.remove(),
+      });
+      return;
+    }
+
+    try {
       await scheduleMutation.mutateAsync({
         jobId,
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
-        teamId: draggedTeamId || inferredTeamId,
+        teamId: resolvedTeamId,
         timezone: DEFAULT_TIMEZONE,
       });
 
       info.event.remove();
-      toast.success('Job scheduled');
+      toast.success(t.schedule.jobScheduled);
     } catch (error: any) {
       info.revert();
-      toast.error(error?.message || 'Could not schedule this job');
+      toast.error(error?.message || t.schedule.couldNotSchedule);
+    }
+  }
+
+  // Fetch free slots per team when the team picker opens
+  useEffect(() => {
+    if (!teamPickerDrop) {
+      setTeamSlots(new Map());
+      return;
+    }
+    let cancelled = false;
+    setLoadingSlots(true);
+    findFreeSlots({ days: 1, slotDuration: 60 })
+      .then((slots) => {
+        if (cancelled) return;
+        const grouped = new Map<string, FreeSlot[]>();
+        for (const slot of slots) {
+          const existing = grouped.get(slot.team_id) || [];
+          if (existing.length < 3) existing.push(slot); // Show max 3 per team
+          grouped.set(slot.team_id, existing);
+        }
+        setTeamSlots(grouped);
+      })
+      .catch(() => { /* availability data optional */ })
+      .finally(() => { if (!cancelled) setLoadingSlots(false); });
+    return () => { cancelled = true; };
+  }, [teamPickerDrop]);
+
+  async function handleTeamPickerAssign(teamId: string) {
+    if (!teamPickerDrop) return;
+    try {
+      await scheduleMutation.mutateAsync({
+        jobId: teamPickerDrop.jobId,
+        startAt: teamPickerDrop.startAt,
+        endAt: teamPickerDrop.endAt,
+        teamId: teamId || null,
+        timezone: DEFAULT_TIMEZONE,
+      });
+      teamPickerDrop.removeEvent();
+      toast.success(t.schedule.jobScheduled);
+    } catch (error: any) {
+      teamPickerDrop.revert();
+      toast.error(error?.message || t.schedule.couldNotSchedule);
+    } finally {
+      setTeamPickerDrop(null);
     }
   }
 
@@ -535,7 +607,7 @@ function ScheduleContent() {
         {overlapCount > 0 ? (
           <div className="lune-event-warning">
             <CircleAlert size={10} />
-            Overlapping
+            {t.schedule.overlapping}
           </div>
         ) : null}
       </div>
@@ -548,18 +620,18 @@ function ScheduleContent() {
     <div className="space-y-6">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight text-text-primary">Schedule</h1>
-          <p className="text-sm text-text-secondary">Day / week / month / map planning with synchronized date state and team filters.</p>
+          <h1 className="text-4xl font-bold tracking-tight text-text-primary">{t.schedule.title}</h1>
+          <p className="text-sm text-text-secondary">{t.schedule.subtitle}</p>
         </div>
         <button type="button" onClick={refreshCalendarData} className="glass-button inline-flex items-center gap-2">
           <RefreshCw size={14} />
-          Refresh
+          {t.schedule.refresh}
         </button>
       </header>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
         <aside className="space-y-4">
-          <div className="glass rounded-2xl border-[1.5px] border-outline-subtle p-4">
+          <div className="glass rounded-2xl border border-outline-subtle p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-bold text-text-primary">{format(selectedDate, 'MMMM yyyy')}</h2>
               <div className="flex items-center gap-1">
@@ -603,9 +675,9 @@ function ScheduleContent() {
             </div>
           </div>
 
-          <div className="glass rounded-2xl border-[1.5px] border-outline-subtle p-4">
+          <div className="glass rounded-2xl border border-outline-subtle p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-text-primary">Teams</h2>
+              <h2 className="text-sm font-bold text-text-primary">{t.schedule.teams}</h2>
               <span className="text-xs text-text-secondary">{selectedTeamIds.length}/{teams.length}</span>
             </div>
 
@@ -616,7 +688,7 @@ function ScheduleContent() {
                 onClick={() => setSelectedTeamIds(allTeamIds)}
                 disabled={teams.length === 0}
               >
-                All teams
+                {t.schedule.allTeams}
               </button>
               <button
                 type="button"
@@ -624,7 +696,7 @@ function ScheduleContent() {
                 onClick={() => setSelectedTeamIds([])}
                 disabled={teams.length === 0}
               >
-                Clear
+                {t.schedule.clear}
               </button>
             </div>
 
@@ -642,54 +714,66 @@ function ScheduleContent() {
                 );
               })}
 
-              {teams.length === 0 ? <p className="px-2 text-xs text-text-secondary">No teams available.</p> : null}
+              {teams.length === 0 ? <p className="px-2 text-xs text-text-secondary">{t.schedule.noTeamsAvailable}</p> : null}
             </div>
 
             {noTeamsSelected ? (
               <p className="mt-2 rounded-lg border border-warning-light bg-warning-light px-2 py-1 text-xs text-warning">
-                No teams selected.
+                {t.schedule.noTeamsSelected}
               </p>
             ) : null}
           </div>
 
-          <div className="glass rounded-2xl border-[1.5px] border-outline-subtle p-4">
+          <div className="glass rounded-2xl border border-outline-subtle p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-text-primary">Unscheduled jobs</h2>
+              <h2 className="text-sm font-bold text-text-primary">{t.schedule.unscheduledJobs}</h2>
               <span className="text-xs text-text-secondary">{unscheduledJobs.length}</span>
             </div>
 
             <div ref={unscheduledRef} className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
               {unscheduledJobs.map((job: UnscheduledJobRecord) => {
+                const isUnassigned = !job.team_id;
                 const teamColor = job.team_id ? teamColorMap[job.team_id] || FALLBACK_TEAM_COLOR : FALLBACK_TEAM_COLOR;
+                const teamName = job.team_id ? teams.find((t) => t.id === job.team_id)?.name : null;
                 return (
-                  <button
+                  <div
                     key={job.id}
-                    type="button"
                     data-job-id={job.id}
                     data-title={job.title}
                     data-team-id={job.team_id || ''}
-                    onClick={() => void openExistingJob(job.id)}
-                    className="w-full cursor-grab rounded-xl border-[1.5px] border-outline-subtle bg-white px-3 py-2 text-left transition-colors hover:bg-black/5 active:cursor-grabbing"
+                    className="w-full cursor-grab rounded-xl border border-outline-subtle bg-white px-3 py-2 text-left transition-colors hover:bg-black/5 active:cursor-grabbing"
                   >
-                    <div className="mb-1 flex items-start justify-between gap-2">
-                      <p className="line-clamp-2 text-sm font-bold text-text-primary">{job.title}</p>
-                      <span className="mt-1 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: teamColor }} />
-                    </div>
-                    <p className="truncate text-xs text-text-secondary">{job.client_name || job.property_address || 'No details'}</p>
-                    <p className="mt-1 text-xs font-semibold text-text-primary">
-                      {formatCurrency((job.total_cents || 0) / 100)}
-                    </p>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => void openExistingJob(job.id)}
+                      className="w-full text-left"
+                    >
+                      <div className="mb-1 flex items-start justify-between gap-2">
+                        <p className="line-clamp-2 text-sm font-bold text-text-primary">{job.title}</p>
+                        {isUnassigned ? (
+                          <span className="mt-0.5 shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-700">
+                            Unassigned
+                          </span>
+                        ) : (
+                          <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: teamColor }} title={teamName || undefined} />
+                        )}
+                      </div>
+                      <p className="truncate text-xs text-text-secondary">{job.client_name || job.property_address || t.schedule.noDetails}</p>
+                      <p className="mt-1 text-xs font-semibold text-text-primary">
+                        {formatCurrency((job.total_cents || 0) / 100)}
+                      </p>
+                    </button>
+                  </div>
                 );
               })}
 
-              {unscheduledJobs.length === 0 ? <p className="text-xs text-text-secondary">No unscheduled jobs.</p> : null}
+              {unscheduledJobs.length === 0 ? <p className="text-xs text-text-secondary">{t.schedule.noUnscheduledJobs}</p> : null}
             </div>
           </div>
         </aside>
 
-        <main className="glass rounded-2xl border-[1.5px] border-outline-subtle p-3">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border-[1.5px] border-outline-subtle bg-white/60 px-4 py-3">
+        <main className="glass rounded-2xl border border-outline-subtle p-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-outline-subtle bg-white/60 px-4 py-3">
             <div className="flex items-center gap-2">
               <button type="button" onClick={goPrev} className="glass-button !p-2">
                 <ChevronLeft size={14} />
@@ -698,18 +782,18 @@ function ScheduleContent() {
                 <ChevronRight size={14} />
               </button>
               <button type="button" onClick={goToday} className="glass-button">
-                Today
+                {t.schedule.today}
               </button>
               <h2 className="ml-2 text-xl font-bold text-text-primary">{headerLabel}</h2>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex rounded-xl border-[1.5px] border-outline-subtle bg-white p-1">
+              <div className="inline-flex rounded-xl border border-outline-subtle bg-white p-1">
                 {[
-                  { id: 'month' as const, label: 'Month' },
-                  { id: 'week' as const, label: 'Week' },
-                  { id: 'day' as const, label: 'Day' },
-                  { id: 'map' as const, label: 'Map' },
+                  { id: 'month' as const, label: t.schedule.month },
+                  { id: 'week' as const, label: t.schedule.week },
+                  { id: 'day' as const, label: t.schedule.day },
+                  { id: 'map' as const, label: t.schedule.map },
                 ].map((item) => (
                   <button
                     key={item.id}
@@ -731,7 +815,7 @@ function ScheduleContent() {
                 className="glass-button-primary inline-flex items-center gap-2"
               >
                 <Plus size={14} />
-                Schedule job
+                {t.schedule.scheduleJob}
               </button>
             </div>
           </div>
@@ -763,7 +847,7 @@ function ScheduleContent() {
           {isOpeningJob ? (
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
               <RefreshCw size={12} className="animate-spin" />
-              Opening job details...
+              {t.schedule.openingJob}
             </div>
           ) : null}
 
@@ -773,8 +857,8 @@ function ScheduleContent() {
             <div className="grid h-[760px] place-items-center rounded-xl border border-dashed border-border text-center">
               <div>
                 <CalendarDays className="mx-auto mb-2 text-text-secondary" size={26} />
-                <p className="text-sm font-medium text-text-primary">No teams selected</p>
-                <p className="mt-1 text-xs text-text-secondary">Use the sidebar filters to pick at least one team.</p>
+                <p className="text-sm font-medium text-text-primary">{t.schedule.noTeamsSelected}</p>
+                <p className="mt-1 text-xs text-text-secondary">{t.schedule.noTeamsSelectedMsg}</p>
               </div>
             </div>
           ) : view === 'map' ? (
@@ -785,7 +869,7 @@ function ScheduleContent() {
               onOpenJob={(jobId) => void openExistingJob(jobId)}
             />
           ) : (
-            <div className="lune-calendar rounded-xl border-[1.5px] border-outline-subtle bg-white/70 p-2">
+            <div className="lune-calendar rounded-xl border border-outline-subtle bg-white/70 p-2">
               <FullCalendar
                 ref={calendarRef}
                 plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -834,13 +918,13 @@ function ScheduleContent() {
                     });
 
                     if (result.overlaps > 0) {
-                      toast.warning(`Rescheduled with ${result.overlaps} overlap warning(s).`);
+                      toast.warning(t.schedule.rescheduledWithOverlaps.replace('{count}', String(result.overlaps)));
                     } else {
-                      toast.success('Event rescheduled');
+                      toast.success(t.schedule.eventRescheduled);
                     }
                   } catch (error: any) {
                     info.revert();
-                    toast.error(error?.message || 'Could not reschedule event');
+                    toast.error(error?.message || t.schedule.couldNotReschedule);
                   }
                 }}
                 eventResize={async (info) => {
@@ -863,13 +947,13 @@ function ScheduleContent() {
                     });
 
                     if (result.overlaps > 0) {
-                      toast.warning(`Resized with ${result.overlaps} overlap warning(s).`);
+                      toast.warning(t.schedule.resizedWithOverlaps.replace('{count}', String(result.overlaps)));
                     } else {
-                      toast.success('Event updated');
+                      toast.success(t.schedule.eventUpdated);
                     }
                   } catch (error: any) {
                     info.revert();
-                    toast.error(error?.message || 'Could not resize event');
+                    toast.error(error?.message || t.schedule.couldNotResize);
                   }
                 }}
                 eventReceive={(info) => {
@@ -880,6 +964,77 @@ function ScheduleContent() {
           )}
         </main>
       </section>
+
+      {/* Team picker overlay — shown when dropping an unassigned job with multiple teams */}
+      {teamPickerDrop && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => { teamPickerDrop.revert(); setTeamPickerDrop(null); }}>
+          <div className="w-full max-w-sm rounded-2xl border border-outline-subtle bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <UserPlus size={16} className="text-text-secondary" />
+                <h3 className="text-sm font-bold text-text-primary">Assign to team</h3>
+              </div>
+              <button type="button" onClick={() => { teamPickerDrop.revert(); setTeamPickerDrop(null); }} className="p-1 rounded-lg hover:bg-black/5">
+                <XIcon size={14} />
+              </button>
+            </div>
+            <p className="mb-3 text-xs text-text-secondary">
+              Select a team for this job. The job will be scheduled at the dropped time slot.
+            </p>
+            <div className="space-y-1.5 max-h-72 overflow-y-auto">
+              {teams.map((team) => {
+                const color = isHexColor(team.color_hex) ? team.color_hex : FALLBACK_TEAM_COLOR;
+                const slots = teamSlots.get(team.id) || [];
+                return (
+                  <div key={team.id} className="rounded-xl border border-outline-subtle overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => void handleTeamPickerAssign(team.id)}
+                      disabled={scheduleMutation.isPending}
+                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-black/5 disabled:opacity-50"
+                    >
+                      <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                      <span className="flex-1 text-sm font-medium text-text-primary">{team.name}</span>
+                      {slots.length > 0 && (
+                        <span className="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700">
+                          {slots.length}+ free
+                        </span>
+                      )}
+                      {!loadingSlots && slots.length === 0 && teamSlots.size > 0 && (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
+                          No slots today
+                        </span>
+                      )}
+                    </button>
+                    {slots.length > 0 && (
+                      <div className="border-t border-outline-subtle/50 bg-surface-secondary/30 px-3 py-1.5 flex flex-wrap gap-1">
+                        {slots.map((slot, i) => {
+                          const startTime = new Date(slot.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                          const endTime = new Date(slot.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                          return (
+                            <span key={i} className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-text-secondary border border-outline-subtle/50">
+                              <Clock size={9} className="text-emerald-500" />
+                              {startTime}–{endTime}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleTeamPickerAssign('')}
+              disabled={scheduleMutation.isPending}
+              className="mt-3 w-full rounded-xl border border-dashed border-outline-subtle px-3 py-2 text-center text-xs text-text-secondary hover:bg-black/5 disabled:opacity-50"
+            >
+              Schedule without team (unassigned)
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

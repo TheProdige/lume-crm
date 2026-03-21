@@ -3,12 +3,14 @@ import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
 import { Mail, Lock, ArrowRight, Github } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { useTranslation } from '../i18n';
 
 interface AuthProps {
   onBack?: () => void;
 }
 
 export default function Auth({ onBack }: AuthProps) {
+  const { t, language } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,7 +26,7 @@ export default function Auth({ onBack }: AuthProps) {
       if (isSignUp) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        setMessage({ type: 'success', text: 'Check your email for the confirmation link!' });
+        setMessage({ type: 'success', text: t.auth.checkEmail });
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -37,6 +39,9 @@ export default function Auth({ onBack }: AuthProps) {
   };
 
   const handleGoogleLogin = async () => {
+    if (loading) return;
+    setLoading(true);
+    setMessage(null);
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -44,10 +49,12 @@ export default function Auth({ onBack }: AuthProps) {
           redirectTo: window.location.origin,
         }
       });
-      
+
       if (error) throw error;
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -65,18 +72,18 @@ export default function Auth({ onBack }: AuthProps) {
                 onClick={onBack}
                 className="text-[10px] uppercase tracking-widest text-gray-400 hover:text-black transition-colors"
               >
-                ← Back to Home
+                {t.auth.backToHome}
               </button>
             </div>
             <h1 className="text-3xl font-extralight tracking-widest">LUME</h1>
             <p className="text-gray-500 font-light text-sm">
-              {isSignUp ? 'Create your workspace' : 'Welcome back to your workspace'}
+              {isSignUp ? t.auth.createWorkspace : t.auth.welcomeBack}
             </p>
           </div>
 
           <form onSubmit={handleAuth} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider ml-1">Email</label>
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider ml-1">{t.auth.emailLabel}</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                 <input
@@ -85,13 +92,13 @@ export default function Auth({ onBack }: AuthProps) {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="glass-input w-full pl-10"
-                  placeholder="name@company.com"
+                  placeholder={t.auth.emailPlaceholder}
                 />
               </div>
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider ml-1">Password</label>
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider ml-1">{t.auth.passwordLabel}</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                 <input
@@ -100,7 +107,7 @@ export default function Auth({ onBack }: AuthProps) {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="glass-input w-full pl-10"
-                  placeholder="••••••••"
+                  placeholder={t.auth.passwordPlaceholder}
                 />
               </div>
             </div>
@@ -111,7 +118,7 @@ export default function Auth({ onBack }: AuthProps) {
                 animate={{ opacity: 1, height: 'auto' }}
                 className={cn(
                   "p-3 rounded-lg text-xs font-light",
-                  message.type === 'success' ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600"
+                  message.type === 'success' ? "bg-success-light text-success" : "bg-danger-light text-danger"
                 )}
               >
                 {message.text}
@@ -123,7 +130,7 @@ export default function Auth({ onBack }: AuthProps) {
               disabled={loading}
               className="glass-button-primary w-full flex items-center justify-center gap-2 group"
             >
-              {loading ? 'Processing...' : isSignUp ? 'Create Account' : 'Sign In'}
+              {loading ? t.auth.processing : isSignUp ? t.auth.createAccount : t.auth.signIn}
               {!loading && <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />}
             </button>
           </form>
@@ -133,14 +140,15 @@ export default function Auth({ onBack }: AuthProps) {
               <div className="w-full border-t border-gray-200"></div>
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-transparent px-2 text-gray-400 font-light">Or continue with</span>
+              <span className="bg-transparent px-2 text-gray-400 font-light">{t.auth.orContinueWith}</span>
             </div>
           </div>
 
           <div className="grid grid-cols-1 gap-3">
             <button
               onClick={handleGoogleLogin}
-              className="glass-button flex items-center justify-center gap-2"
+              disabled={loading}
+              className="glass-button flex items-center justify-center gap-2 disabled:opacity-50"
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24">
                 <path
@@ -160,17 +168,45 @@ export default function Auth({ onBack }: AuthProps) {
                   d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                 />
               </svg>
-              Google
+              {t.auth.google}
             </button>
           </div>
 
-          <div className="text-center">
+          <div className="text-center space-y-2">
             <button
               onClick={() => setIsSignUp(!isSignUp)}
               className="text-xs text-gray-500 hover:text-black transition-colors font-light"
             >
-              {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
+              {isSignUp ? `${t.auth.alreadyHaveAccount} ${t.auth.signIn}` : `${t.auth.dontHaveAccount} ${t.auth.signUp}`}
             </button>
+            {!isSignUp && (
+              <div>
+                <button
+                  onClick={async () => {
+                    if (!email.trim()) {
+                      setMessage({ type: 'error', text: language === 'fr' ? 'Entrez votre email pour reinitialiser.' : 'Enter your email to reset password.' });
+                      return;
+                    }
+                    setLoading(true);
+                    try {
+                      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+                        redirectTo: `${window.location.origin}/settings`,
+                      });
+                      if (error) throw error;
+                      setMessage({ type: 'success', text: language === 'fr' ? 'Lien de reinitialisation envoye par email.' : 'Password reset link sent to your email.' });
+                    } catch (err: any) {
+                      setMessage({ type: 'error', text: err.message });
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                  disabled={loading}
+                  className="text-xs text-gray-400 hover:text-gray-600 transition-colors font-light underline"
+                >
+                  {language === 'fr' ? 'Mot de passe oublie ?' : 'Forgot password?'}
+                </button>
+              </div>
+            )}
           </div>
         </motion.div>
       </div>

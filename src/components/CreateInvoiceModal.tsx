@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from '../i18n';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronLeft, Plus, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -37,6 +38,7 @@ function buildEmptyLine(): InvoiceLineForm {
 
 export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: CreateInvoiceModalProps) {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const [step, setStep] = useState<Step>('select-client');
   const [selectedClient, setSelectedClient] = useState<{ id: string; name: string; email: string | null } | null>(null);
   const [searchValue, setSearchValue] = useState('');
@@ -113,7 +115,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
   async function handleSaveDraft() {
     setInlineError(null);
     if (!selectedClient) {
-      setInlineError('Select a client first.');
+      setInlineError(t.modals.selectClientFirst);
       return;
     }
 
@@ -141,7 +143,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
       onCreated?.(created.id);
       onClose();
     } catch (error: any) {
-      setInlineError(error?.message || 'Could not save invoice draft.');
+      setInlineError(error?.message || t.modals.couldNotSaveDraft);
     }
   }
 
@@ -157,9 +159,9 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
           >
             <header className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <h2 className="text-2xl font-semibold tracking-tight text-text-primary">Create Invoice</h2>
+                <h2 className="text-2xl font-semibold tracking-tight text-text-primary">{t.modals.createInvoice}</h2>
                 <p className="text-xs text-text-secondary">
-                  {step === 'select-client' ? 'Step 1: Select client' : 'Step 2: Draft invoice'}
+                  {step === 'select-client' ? t.modals.step1SelectClient : t.modals.step2DraftInvoice}
                 </p>
               </div>
               <button type="button" onClick={onClose} className="glass-button !p-2">
@@ -174,14 +176,14 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                   <input
                     value={searchValue}
                     onChange={(event) => setSearchValue(event.target.value)}
-                    placeholder="Search active clients..."
+                    placeholder={t.modals.searchActiveClients}
                     className="glass-input w-full pl-9"
                   />
                 </div>
 
                 <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-                  {clientsQuery.isLoading ? <p className="text-sm text-text-secondary">Loading clients...</p> : null}
-                  {clientsQuery.isError ? <p className="text-sm text-danger">Could not load clients.</p> : null}
+                  {clientsQuery.isLoading ? <p className="text-sm text-text-secondary">{t.modals.loadingClients}</p> : null}
+                  {clientsQuery.isError ? <p className="text-sm text-danger">{t.modals.couldNotLoadClients}</p> : null}
 
                   {(clientsQuery.data?.items || []).map((client) => (
                     <button
@@ -194,12 +196,12 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                       className="w-full rounded-xl border border-white/30 bg-surface px-3 py-3 text-left transition-colors hover:bg-surface-secondary"
                     >
                       <p className="text-sm font-semibold text-text-primary">{client.name}</p>
-                      <p className="text-xs text-text-secondary">{client.email || 'No email'}</p>
+                      <p className="text-xs text-text-secondary">{client.email || t.common.noEmail}</p>
                     </button>
                   ))}
 
                   {!clientsQuery.isLoading && (clientsQuery.data?.items || []).length === 0 ? (
-                    <p className="text-sm text-text-secondary">No active clients found.</p>
+                    <p className="text-sm text-text-secondary">{t.modals.noActiveClients}</p>
                   ) : null}
                 </div>
               </section>
@@ -212,23 +214,23 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                     className="glass-button inline-flex items-center gap-2 !px-3 !py-1.5"
                   >
                     <ChevronLeft size={14} />
-                    Back to clients
+                    {t.modals.backToClients}
                   </button>
                   <p className="text-sm font-medium text-text-secondary">{selectedClient?.name}</p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                   <div className="space-y-2 lg:col-span-2">
-                    <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary">Subject</label>
+                    <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary">{t.invoices.subject}</label>
                     <input
                       value={subject}
                       onChange={(event) => setSubject(event.target.value)}
-                      placeholder="Invoice subject"
+                      placeholder={t.modals.invoiceSubject}
                       className="glass-input w-full"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary">Due date</label>
+                    <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary">{t.invoices.dueDate}</label>
                     <input
                       type="date"
                       value={dueDate}
@@ -240,14 +242,14 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
 
                 <div className="mt-5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold tracking-tight text-text-primary">Items</h3>
+                    <h3 className="text-lg font-semibold tracking-tight text-text-primary">{t.modals.items}</h3>
                     <button
                       type="button"
                       onClick={() => setLines((prev) => [...prev, buildEmptyLine()])}
                       className="glass-button inline-flex items-center gap-2 !px-3 !py-1.5"
                     >
                       <Plus size={13} />
-                      Add line
+                      {t.modals.addLine}
                     </button>
                   </div>
 
@@ -256,7 +258,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                       <input
                         value={line.description}
                         onChange={(event) => updateLine(line.id, { description: event.target.value })}
-                        placeholder="Description"
+                        placeholder={t.invoiceDetails.description}
                         className="glass-input lg:col-span-6"
                       />
                       <input
@@ -265,7 +267,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                         step={0.01}
                         value={line.qty}
                         onChange={(event) => updateLine(line.id, { qty: Number(event.target.value) || 0 })}
-                        placeholder="Qty"
+                        placeholder={t.invoiceDetails.qty}
                         className="glass-input lg:col-span-2"
                       />
                       <input
@@ -274,7 +276,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                         step={0.01}
                         value={line.unitPrice}
                         onChange={(event) => updateLine(line.id, { unitPrice: Number(event.target.value) || 0 })}
-                        placeholder="Unit price"
+                        placeholder={t.modals.unitPrice}
                         className="glass-input lg:col-span-3"
                       />
                       <button
@@ -291,7 +293,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
 
                 <div className="mt-5 grid grid-cols-1 gap-3 rounded-xl border border-border bg-surface/70 p-3 lg:grid-cols-3">
                   <div className="space-y-2 lg:col-span-1">
-                    <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary">Tax</label>
+                    <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary">{t.invoiceDetails.tax}</label>
                     <input
                       type="number"
                       min={0}
@@ -304,15 +306,15 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                   <div className="lg:col-span-2">
                     <div className="rounded-xl border border-border bg-surface p-3 text-sm">
                       <p className="flex items-center justify-between">
-                        <span className="text-text-secondary">Subtotal</span>
+                        <span className="text-text-secondary">{t.modals.subtotal}</span>
                         <span className="font-semibold">{formatMoneyFromCents(subtotalCents)}</span>
                       </p>
                       <p className="mt-1 flex items-center justify-between">
-                        <span className="text-text-secondary">Tax</span>
+                        <span className="text-text-secondary">{t.invoiceDetails.tax}</span>
                         <span className="font-semibold">{formatMoneyFromCents(taxCents)}</span>
                       </p>
                       <p className="mt-2 flex items-center justify-between border-t border-black/10 pt-2 text-base">
-                        <span className="font-semibold text-text-primary">Total</span>
+                        <span className="font-semibold text-text-primary">{t.common.total}</span>
                         <span className="font-semibold text-text-primary">{formatMoneyFromCents(totalCents)}</span>
                       </p>
                     </div>
@@ -330,11 +332,11 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
             {step === 'draft' ? (
               <footer className="flex items-center justify-between border-t border-border bg-surface/70 px-5 py-4">
                 <button type="button" onClick={onClose} className="glass-button">
-                  Cancel
+                  {t.common.cancel}
                 </button>
                 <div className="flex items-center gap-2">
                   <button type="button" disabled className="glass-button !opacity-60">
-                    Send invoice
+                    {t.modals.sendInvoice}
                   </button>
                   <button
                     type="button"
@@ -342,7 +344,7 @@ export default function CreateInvoiceModal({ isOpen, onClose, onCreated }: Creat
                     disabled={isSaving}
                     className="glass-button-primary"
                   >
-                    {isSaving ? 'Saving...' : 'Save draft'}
+                    {isSaving ? t.common.saving : t.modals.saveDraft}
                   </button>
                 </div>
               </footer>

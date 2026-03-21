@@ -1,0 +1,291 @@
+/* Command Palette — Ctrl+K global search & quick actions
+   Inspired by Linear/Notion command bars.
+*/
+
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  Search, Plus, Users, Contact, Briefcase, FileText,
+  Calendar, Kanban, Settings, MessageSquare, ArrowRight,
+  CreditCard, TrendingUp, StickyNote, Zap,
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { cn } from '../lib/utils';
+import { supabase } from '../lib/supabase';
+
+interface CommandItem {
+  id: string;
+  label: string;
+  sublabel?: string;
+  icon: React.ElementType;
+  action: () => void;
+  section: string;
+  keywords?: string;
+}
+
+interface CommandPaletteProps {
+  open: boolean;
+  onClose: () => void;
+  language: string;
+}
+
+export default function CommandPalette({ open, onClose, language }: CommandPaletteProps) {
+  const fr = language === 'fr';
+  const navigate = useNavigate();
+  const [query, setQuery] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [searchResults, setSearchResults] = useState<CommandItem[]>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Navigation commands (always available)
+  const navCommands = useMemo((): CommandItem[] => [
+    { id: 'nav-dashboard', label: fr ? 'Accueil' : 'Dashboard', icon: Search, action: () => navigate('/dashboard'), section: fr ? 'Navigation' : 'Navigation', keywords: 'home accueil' },
+    { id: 'nav-leads', label: 'Leads', icon: Contact, action: () => navigate('/leads'), section: fr ? 'Navigation' : 'Navigation', keywords: 'prospects' },
+    { id: 'nav-pipeline', label: 'Pipeline', icon: Kanban, action: () => navigate('/pipeline'), section: fr ? 'Navigation' : 'Navigation', keywords: 'deals kanban' },
+    { id: 'nav-clients', label: 'Clients', icon: Users, action: () => navigate('/clients'), section: fr ? 'Navigation' : 'Navigation', keywords: 'customers' },
+    { id: 'nav-jobs', label: 'Jobs', icon: Briefcase, action: () => navigate('/jobs'), section: fr ? 'Navigation' : 'Navigation', keywords: 'travaux' },
+    { id: 'nav-calendar', label: fr ? 'Calendrier' : 'Calendar', icon: Calendar, action: () => navigate('/calendar'), section: fr ? 'Navigation' : 'Navigation', keywords: 'schedule horaire' },
+    { id: 'nav-invoices', label: fr ? 'Factures' : 'Invoices', icon: FileText, action: () => navigate('/invoices'), section: fr ? 'Navigation' : 'Navigation', keywords: 'bills' },
+    { id: 'nav-payments', label: fr ? 'Paiements' : 'Payments', icon: CreditCard, action: () => navigate('/payments'), section: fr ? 'Navigation' : 'Navigation' },
+    { id: 'nav-messages', label: 'Messages', icon: MessageSquare, action: () => navigate('/messages'), section: fr ? 'Navigation' : 'Navigation', keywords: 'sms text' },
+    { id: 'nav-insights', label: 'Insights', icon: TrendingUp, action: () => navigate('/insights'), section: fr ? 'Navigation' : 'Navigation', keywords: 'analytics stats' },
+    { id: 'nav-notes', label: 'Notes', icon: StickyNote, action: () => navigate('/notes'), section: fr ? 'Navigation' : 'Navigation', keywords: 'boards whiteboard' },
+    { id: 'nav-workflows', label: 'Workflows', icon: Zap, action: () => navigate('/workflows'), section: fr ? 'Navigation' : 'Navigation', keywords: 'automations' },
+    { id: 'nav-settings', label: fr ? 'Parametres' : 'Settings', icon: Settings, action: () => navigate('/settings'), section: fr ? 'Navigation' : 'Navigation' },
+  ], [fr, navigate]);
+
+  const actionCommands = useMemo((): CommandItem[] => [
+    { id: 'act-new-lead', label: fr ? 'Creer un lead' : 'Create lead', icon: Plus, action: () => { navigate('/leads'); setTimeout(() => window.dispatchEvent(new CustomEvent('crm:open-new-lead')), 300); }, section: fr ? 'Actions' : 'Actions', keywords: 'add new prospect' },
+    { id: 'act-new-client', label: fr ? 'Creer un client' : 'Create client', icon: Plus, action: () => { navigate('/clients'); setTimeout(() => window.dispatchEvent(new CustomEvent('crm:open-new-client')), 300); }, section: fr ? 'Actions' : 'Actions', keywords: 'add new customer' },
+    { id: 'act-new-job', label: fr ? 'Creer une job' : 'Create job', icon: Plus, action: () => { navigate('/jobs'); setTimeout(() => window.dispatchEvent(new CustomEvent('crm:open-new-job')), 300); }, section: fr ? 'Actions' : 'Actions', keywords: 'add new travail' },
+    { id: 'act-new-invoice', label: fr ? 'Creer une facture' : 'Create invoice', icon: Plus, action: () => { navigate('/invoices'); setTimeout(() => window.dispatchEvent(new CustomEvent('crm:open-new-invoice')), 300); }, section: fr ? 'Actions' : 'Actions', keywords: 'add new bill' },
+    { id: 'act-new-deal', label: fr ? 'Creer un deal' : 'Create deal', icon: Plus, action: () => { navigate('/pipeline'); setTimeout(() => window.dispatchEvent(new CustomEvent('crm:open-new-deal')), 300); }, section: fr ? 'Actions' : 'Actions', keywords: 'add new' },
+  ], [fr, navigate]);
+
+  // Search clients/leads/jobs in DB
+  useEffect(() => {
+    if (!query.trim() || query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const q = query.trim();
+      const results: CommandItem[] = [];
+      try {
+        // Search clients
+        const { data: clients } = await supabase
+          .from('clients_active')
+          .select('id, first_name, last_name, company, email')
+          .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,company.ilike.%${q}%,email.ilike.%${q}%`)
+          .limit(5);
+        for (const c of clients || []) {
+          results.push({
+            id: `client-${c.id}`,
+            label: `${c.first_name} ${c.last_name}`.trim(),
+            sublabel: c.company || c.email || undefined,
+            icon: Users,
+            action: () => navigate(`/clients/${c.id}`),
+            section: 'Clients',
+          });
+        }
+        // Search leads
+        const { data: leads } = await supabase
+          .from('leads_active')
+          .select('id, first_name, last_name, company, email')
+          .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,company.ilike.%${q}%,email.ilike.%${q}%`)
+          .limit(5);
+        for (const l of leads || []) {
+          results.push({
+            id: `lead-${l.id}`,
+            label: `${l.first_name} ${l.last_name}`.trim(),
+            sublabel: l.company || l.email || undefined,
+            icon: Contact,
+            action: () => navigate('/leads'),
+            section: 'Leads',
+          });
+        }
+        // Search jobs
+        const { data: jobs } = await supabase
+          .from('jobs_active')
+          .select('id, title, client_name, job_number')
+          .or(`title.ilike.%${q}%,client_name.ilike.%${q}%,job_number.ilike.%${q}%`)
+          .limit(5);
+        for (const j of jobs || []) {
+          results.push({
+            id: `job-${j.id}`,
+            label: j.title || `Job #${j.job_number}`,
+            sublabel: j.client_name || undefined,
+            icon: Briefcase,
+            action: () => navigate(`/jobs/${j.id}`),
+            section: 'Jobs',
+          });
+        }
+      } catch { /* search failed silently */ }
+      setSearchResults(results);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [query, navigate]);
+
+  // Filter commands by query
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase();
+    if (!q) return [...actionCommands, ...navCommands];
+
+    const match = (item: CommandItem) => {
+      return item.label.toLowerCase().includes(q) ||
+        item.sublabel?.toLowerCase().includes(q) ||
+        item.keywords?.toLowerCase().includes(q);
+    };
+
+    return [
+      ...searchResults,
+      ...actionCommands.filter(match),
+      ...navCommands.filter(match),
+    ];
+  }, [query, navCommands, actionCommands, searchResults]);
+
+  // Group by section
+  const sections = useMemo(() => {
+    const map = new Map<string, CommandItem[]>();
+    for (const item of filtered) {
+      const arr = map.get(item.section) || [];
+      arr.push(item);
+      map.set(item.section, arr);
+    }
+    return Array.from(map.entries());
+  }, [filtered]);
+
+  // Reset selection on query change
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [query]);
+
+  // Focus input on open
+  useEffect(() => {
+    if (open) {
+      setQuery('');
+      setSearchResults([]);
+      setSelectedIndex(0);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+
+  // Keyboard navigation
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const item = filtered[selectedIndex];
+      if (item) {
+        item.action();
+        onClose();
+      }
+    } else if (e.key === 'Escape') {
+      onClose();
+    }
+  }, [filtered, selectedIndex, onClose]);
+
+  // Scroll selected into view
+  useEffect(() => {
+    const el = listRef.current?.querySelector(`[data-index="${selectedIndex}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex]);
+
+  if (!open) return null;
+
+  let flatIndex = -1;
+
+  return (
+    <>
+      {/* Backdrop */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[300] bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      {/* Palette */}
+      <div className="fixed inset-0 z-[301] flex items-start justify-center pt-[15vh] px-4 pointer-events-none">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: -10 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -10 }}
+          transition={{ duration: 0.12 }}
+          className="w-full max-w-lg bg-surface border border-outline rounded-xl shadow-2xl overflow-hidden pointer-events-auto"
+        >
+          {/* Search input */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-outline">
+            <Search size={16} className="text-text-tertiary shrink-0" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={fr ? 'Chercher ou executer une commande...' : 'Search or run a command...'}
+              className="flex-1 bg-transparent border-none outline-none text-[14px] text-text-primary placeholder:text-text-tertiary"
+            />
+            <kbd className="hidden sm:inline-flex px-1.5 py-0.5 rounded border border-outline text-[10px] text-text-tertiary font-mono">
+              ESC
+            </kbd>
+          </div>
+
+          {/* Results */}
+          <div ref={listRef} className="max-h-[50vh] overflow-y-auto py-1">
+            {filtered.length === 0 && (
+              <p className="text-center text-[13px] text-text-tertiary py-8">
+                {fr ? 'Aucun resultat' : 'No results'}
+              </p>
+            )}
+            {sections.map(([section, items]) => (
+              <div key={section}>
+                <p className="px-4 pt-3 pb-1 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                  {section}
+                </p>
+                {items.map((item) => {
+                  flatIndex++;
+                  const idx = flatIndex;
+                  const isSelected = idx === selectedIndex;
+                  return (
+                    <button
+                      key={item.id}
+                      data-index={idx}
+                      onClick={() => { item.action(); onClose(); }}
+                      onMouseEnter={() => setSelectedIndex(idx)}
+                      className={cn(
+                        'w-full flex items-center gap-3 px-4 py-2 text-left transition-colors',
+                        isSelected ? 'bg-primary/10 text-primary' : 'text-text-primary hover:bg-surface-secondary',
+                      )}
+                    >
+                      <item.icon size={15} className={isSelected ? 'text-primary' : 'text-text-tertiary'} />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-[13px] font-medium">{item.label}</span>
+                        {item.sublabel && (
+                          <span className="text-[11px] text-text-tertiary ml-2">{item.sublabel}</span>
+                        )}
+                      </div>
+                      {isSelected && <ArrowRight size={13} className="text-primary shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          {/* Footer hints */}
+          <div className="flex items-center gap-4 px-4 py-2 border-t border-outline text-[10px] text-text-tertiary">
+            <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded border border-outline font-mono">↑↓</kbd> {fr ? 'naviguer' : 'navigate'}</span>
+            <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded border border-outline font-mono">↵</kbd> {fr ? 'ouvrir' : 'open'}</span>
+            <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded border border-outline font-mono">esc</kbd> {fr ? 'fermer' : 'close'}</span>
+          </div>
+        </motion.div>
+      </div>
+    </>
+  );
+}

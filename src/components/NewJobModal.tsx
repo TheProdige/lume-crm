@@ -1,24 +1,30 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BriefcaseBusiness, Calendar, ChevronDown, Clock3, Plus, X } from 'lucide-react';
+import { BriefcaseBusiness, Calendar, ChevronDown, Clock3, Package, Plus, Trash2, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { cn, formatCurrency } from '../lib/utils';
 import { listClients } from '../lib/clientsApi';
 import { getSuggestedJobNumber, listSalespeople } from '../lib/jobsApi';
+import { resolveClientIdForLead } from '../lib/leadsApi';
 import { listTeams } from '../lib/teamsApi';
 import { Job } from '../types';
+import ServicePicker from './ServicePicker';
+import type { PredefinedService } from '../lib/servicesApi';
+import { supabase } from '../lib/supabase';
 
 interface LineItemForm {
   id: string;
   name: string;
   qtyInput: string;
   unitPriceInput: string;
+  included: boolean;
 }
 
 export interface JobDraftLineItem {
   name: string;
   qty?: number;
   unit_price_cents?: number;
+  included?: boolean;
 }
 
 export interface JobDraftInitialValues {
@@ -70,7 +76,7 @@ interface NewJobModalProps {
     currency: string;
     requires_invoicing: boolean;
     billing_split: boolean;
-    line_items: Array<{ name: string; qty: number; unit_price_cents: number }>;
+    line_items: Array<{ name: string; qty: number; unit_price_cents: number; included?: boolean }>;
     subtotal?: number;
     tax_total?: number;
     total?: number;
@@ -90,11 +96,19 @@ interface NewJobModalProps {
     tax_lines: Array<{ code: string; label: string; rate: number; enabled: boolean }>;
   }) => Promise<void>;
   isFinishingJob?: boolean;
+  onDelete?: (jobId: string) => Promise<void>;
+  isDeleting?: boolean;
 }
 
 function buildDateTime(date: string, time: string): string | null {
   if (!date || !time) return null;
-  return new Date(`${date}T${time}:00`).toISOString();
+  // Build ISO string preserving user-intended local time by using Date component constructor
+  // which interprets values in the local timezone (consistent with the date/time inputs)
+  const [year, month, day] = date.split('-').map(Number);
+  const [hours, minutes] = time.split(':').map(Number);
+  const d = new Date(year, month - 1, day, hours, minutes, 0);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 function formatLocalDateInput(iso: string | null | undefined): string {
@@ -169,6 +183,8 @@ export default function NewJobModal({
   source = null,
   onFinishJob,
   isFinishingJob = false,
+  onDelete,
+  isDeleting = false,
 }: NewJobModalProps) {
   const isEditMode = Boolean(initialValues?.id);
   const [title, setTitle] = useState('');
@@ -189,10 +205,14 @@ export default function NewJobModal({
   const [prefilledAddress, setPrefilledAddress] = useState<string | null>(null);
   const [status, setStatus] = useState('Draft');
   const [lineItems, setLineItems] = useState<LineItemForm[]>([
-    { id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0' },
+    { id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0', included: true },
   ]);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [calendarHint, setCalendarHint] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [servicePickerOpen, setServicePickerOpen] = useState(false);
+  const [addedServiceIds, setAddedServiceIds] = useState<Set<string>>(new Set());
+  const [orgCurrency, setOrgCurrency] = useState('CAD');
   const [tpsEnabled, setTpsEnabled] = useState(true);
   const [tpsRate, setTpsRate] = useState(5);
   const [tvqEnabled, setTvqEnabled] = useState(true);
@@ -211,6 +231,7 @@ export default function NewJobModal({
     if (!isOpen) return;
     setInlineError(null);
     setCalendarHint(null);
+    setConfirmDelete(false);
     setTitle(initialValues?.title || '');
     setLeadId(initialValues?.lead_id || null);
     setClientId(initialValues?.client_id || '');
@@ -255,10 +276,11 @@ export default function NewJobModal({
           name: item.name || '',
           qtyInput: String(Math.max(1, Number(item.qty || 1))),
           unitPriceInput: String(Math.max(0, Number(item.unit_price_cents || 0) / 100)),
+          included: item.included !== false,
         }))
       );
     } else {
-      setLineItems([{ id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0' }]);
+      setLineItems([{ id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0', included: true }]);
     }
     const initialTotal = initialValues?.subtotal ?? initialValues?.total ?? null;
     setTotalInput(initialTotal == null ? '' : String(initialTotal));
@@ -285,6 +307,19 @@ export default function NewJobModal({
           address: client.address,
         }));
         setClients(options);
+
+        // Auto-resolve client_id from lead_id if not already set
+        const currentLeadId = initialValues?.lead_id;
+        const currentClientId = initialValues?.client_id;
+        if (currentLeadId && !currentClientId) {
+          resolveClientIdForLead(currentLeadId)
+            .then((resolvedClientId) => {
+              if (resolvedClientId) {
+                setClientId(resolvedClientId);
+              }
+            })
+            .catch((err) => console.error('[jobs] failed to resolve client for lead', err));
+        }
       })
       .catch((error) => {
         console.error('[jobs] failed to load clients', error);
@@ -300,6 +335,16 @@ export default function NewJobModal({
     listSalespeople()
       .then(setSalespeople)
       .catch(() => setSalespeople([]));
+
+    // Fetch org currency
+    supabase
+      .from('org_billing_settings')
+      .select('currency')
+      .limit(1)
+      .maybeSingle()
+      .then(({ data: billing }) => {
+        if (billing?.currency) setOrgCurrency(billing.currency);
+      });
   }, [isOpen, initialValues, isEditMode, source?.type]);
 
   const selectedClient = useMemo(
@@ -309,6 +354,7 @@ export default function NewJobModal({
 
   const totalCents = useMemo(() => {
     return lineItems.reduce((sum, item) => {
+      if (!item.included) return sum;
       const qtyParsed = Number.parseFloat(item.qtyInput || '0');
       const unitParsed = Number.parseFloat(item.unitPriceInput || '0');
       const qty = Number.isFinite(qtyParsed) ? qtyParsed : 0;
@@ -365,7 +411,7 @@ export default function NewJobModal({
     setDescription(null);
     setPrefilledAddress(null);
     setStatus('Scheduled');
-    setLineItems([{ id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0' }]);
+    setLineItems([{ id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0', included: true }]);
     setTotalInput('');
     setInlineError(null);
     setCalendarHint(null);
@@ -390,6 +436,27 @@ export default function NewJobModal({
 
   const removeLineItem = (id: string) => {
     setLineItems((prev) => (prev.length > 1 ? prev.filter((item) => item.id !== id) : prev));
+  };
+
+  const handleServiceSelected = (service: PredefinedService) => {
+    // Replace the first empty line item or add a new one
+    setLineItems((prev) => {
+      const emptyIdx = prev.findIndex((item) => !item.name.trim());
+      const newItem: LineItemForm = {
+        id: crypto.randomUUID(),
+        name: service.name,
+        qtyInput: '1',
+        unitPriceInput: String(service.default_price_cents / 100),
+        included: true,
+      };
+      if (emptyIdx !== -1) {
+        const updated = [...prev];
+        updated[emptyIdx] = newItem;
+        return updated;
+      }
+      return [...prev, newItem];
+    });
+    setAddedServiceIds((prev) => new Set([...prev, service.id]));
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -434,6 +501,7 @@ export default function NewJobModal({
         name: item.name.trim(),
         qty: Math.max(1, Number.parseFloat(item.qtyInput || '0') || 1),
         unit_price_cents: Math.max(0, Math.round((Number.parseFloat(item.unitPriceInput || '0') || 0) * 100)),
+        included: item.included,
       }));
 
     try {
@@ -452,7 +520,7 @@ export default function NewJobModal({
         end_at: endAt,
         status: scheduledAt ? status : 'Draft',
         total_cents: grandTotalCents,
-        currency: 'CAD',
+        currency: orgCurrency,
         requires_invoicing: requiresInvoicing,
         billing_split: billingSplit,
         line_items: filteredItems,
@@ -470,6 +538,7 @@ export default function NewJobModal({
   };
 
   return (
+    <>
     <AnimatePresence>
       {isOpen && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-md p-4">
@@ -686,69 +755,122 @@ export default function NewJobModal({
               </section>
 
               <section className="pt-6 border-t border-white/15 space-y-4">
-                <h3 className="text-3xl font-semibold tracking-tight">Product / Service</h3>
-                {lineItems.map((item) => (
-                  <div key={item.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-                    <div className="md:col-span-6 space-y-2">
-                      <label className="text-xs uppercase tracking-widest text-black font-semibold">Name</label>
-                      <input
-                        value={item.name}
-                        onChange={(event) => updateLineItem(item.id, { name: event.target.value })}
-                        className="glass-input w-full"
-                        placeholder="Service name"
-                      />
-                    </div>
-                    <div className="md:col-span-2 space-y-2">
-                      <label className="text-xs uppercase tracking-widest text-black font-semibold">Quantity</label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={item.qtyInput}
-                        onChange={(event) => updateLineItem(item.id, { qtyInput: sanitizeIntegerInput(event.target.value) })}
-                        onBlur={(event) => {
-                          const normalized = sanitizeIntegerInput(event.target.value);
-                          updateLineItem(item.id, { qtyInput: normalized || '1' });
-                        }}
-                        className="glass-input w-full"
-                      />
-                    </div>
-                    <div className="md:col-span-3 space-y-2">
-                      <label className="text-xs uppercase tracking-widest text-black font-semibold">Unit price</label>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={item.unitPriceInput}
-                        onChange={(event) =>
-                          updateLineItem(item.id, { unitPriceInput: sanitizeDecimalInput(event.target.value) })
-                        }
-                        onBlur={(event) =>
-                          updateLineItem(item.id, { unitPriceInput: normalizeDecimalInput(event.target.value) || '0' })
-                        }
-                        className="glass-input w-full"
-                      />
-                    </div>
-                    <div className="md:col-span-1 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => removeLineItem(item.id)}
-                        className="glass-button !px-3"
-                        disabled={lineItems.length === 1}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-3xl font-semibold tracking-tight">Line Items</h3>
+                  <button
+                    type="button"
+                    onClick={() => setServicePickerOpen(true)}
+                    className="glass-button !py-2 !px-4 inline-flex items-center gap-2"
+                  >
+                    <Package size={14} />
+                    Add from catalog
+                  </button>
+                </div>
+
+                {/* Line items list */}
+                {lineItems.length === 1 && !lineItems[0].name.trim() ? (
+                  <div className="rounded-xl border border-dashed border-outline-subtle bg-surface-secondary/30 p-6 text-center">
+                    <Package size={24} className="text-text-tertiary mx-auto mb-2 opacity-40" />
+                    <p className="text-sm text-text-secondary">No line items added yet</p>
+                    <p className="text-xs text-text-tertiary mt-1">Click "Add from catalog" to add predefined services</p>
+                    <button
+                      type="button"
+                      onClick={() => setServicePickerOpen(true)}
+                      className="mt-3 text-xs font-semibold text-primary hover:underline inline-flex items-center gap-1"
+                    >
+                      <Plus size={11} /> Browse services
+                    </button>
                   </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setLineItems((prev) => [...prev, { id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0' }])
-                  }
-                  className="glass-button-primary !py-2 !px-4 inline-flex items-center gap-2"
-                >
-                  <Plus size={14} />
-                  Add Line Item
-                </button>
+                ) : (
+                  <div className="space-y-2">
+                    {lineItems.map((item) => (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          'grid grid-cols-1 md:grid-cols-12 gap-3 items-end rounded-lg border p-3 transition-all',
+                          item.included
+                            ? 'border-outline-subtle/40 bg-surface-secondary/20'
+                            : 'border-outline-subtle/20 bg-surface-secondary/5 opacity-50'
+                        )}
+                      >
+                        <div className="md:col-span-5 space-y-1">
+                          <label className="text-[10px] uppercase tracking-widest text-text-tertiary font-semibold">Name</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={item.included}
+                              onChange={() => updateLineItem(item.id, { included: !item.included })}
+                              className="h-4 w-4 shrink-0 rounded cursor-pointer accent-primary"
+                              title={item.included ? 'Click to exclude from total' : 'Click to include in total'}
+                            />
+                            <input
+                              value={item.name}
+                              onChange={(event) => updateLineItem(item.id, { name: event.target.value })}
+                              className={cn('glass-input w-full', !item.included && 'line-through')}
+                              placeholder="Service name"
+                            />
+                          </div>
+                        </div>
+                        <div className="md:col-span-2 space-y-1">
+                          <label className="text-[10px] uppercase tracking-widest text-text-tertiary font-semibold">Qty</label>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={item.qtyInput}
+                            onChange={(event) => updateLineItem(item.id, { qtyInput: sanitizeIntegerInput(event.target.value) })}
+                            onBlur={(event) => {
+                              const normalized = sanitizeIntegerInput(event.target.value);
+                              updateLineItem(item.id, { qtyInput: normalized || '1' });
+                            }}
+                            className="glass-input w-full"
+                          />
+                        </div>
+                        <div className="md:col-span-3 space-y-1">
+                          <label className="text-[10px] uppercase tracking-widest text-text-tertiary font-semibold">Unit price</label>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={item.unitPriceInput}
+                            onChange={(event) =>
+                              updateLineItem(item.id, { unitPriceInput: sanitizeDecimalInput(event.target.value) })
+                            }
+                            onBlur={(event) =>
+                              updateLineItem(item.id, { unitPriceInput: normalizeDecimalInput(event.target.value) || '0' })
+                            }
+                            className="glass-input w-full"
+                          />
+                        </div>
+                        <div className="md:col-span-2 flex justify-end items-center gap-1">
+                          <span className={cn('text-[13px] font-semibold tabular-nums mr-1 hidden md:block', item.included ? 'text-text-primary' : 'text-text-tertiary line-through')}>
+                            {formatCurrency(Math.round((parseFloat(item.qtyInput || '0') || 0) * (parseFloat(item.unitPriceInput || '0') || 0)))}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeLineItem(item.id)}
+                            className="p-1.5 rounded-md text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors"
+                            disabled={lineItems.length === 1}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLineItems((prev) => [...prev, { id: crypto.randomUUID(), name: '', qtyInput: '1', unitPriceInput: '0', included: true }])
+                    }
+                    className="glass-button !py-2 !px-4 inline-flex items-center gap-2 text-sm"
+                  >
+                    <Plus size={14} />
+                    Custom line item
+                  </button>
+                </div>
               </section>
 
               <section className="pt-6 border-t border-white/15 space-y-4">
@@ -808,9 +930,43 @@ export default function NewJobModal({
             </form>
 
             <div className="px-6 py-4 border-t border-white/15 bg-surface/70 backdrop-blur sticky bottom-0 flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-widest text-black font-semibold">Total value</p>
-                <p className="text-4xl font-semibold tracking-tight">{formatCurrency(grandTotalCents / 100)}</p>
+              <div className="flex items-center gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-widest text-black font-semibold">Total value</p>
+                  <p className="text-4xl font-semibold tracking-tight">{formatCurrency(grandTotalCents / 100)}</p>
+                </div>
+                {isEditMode && initialValues?.id && onDelete && (
+                  confirmDelete ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-danger font-medium">Delete this job?</span>
+                      <button
+                        type="button"
+                        onClick={() => void onDelete(initialValues.id as string)}
+                        disabled={isDeleting}
+                        className="rounded-lg bg-danger px-3 py-1.5 text-xs font-semibold text-white hover:bg-danger/80 transition-colors disabled:opacity-50"
+                      >
+                        {isDeleting ? 'Deleting...' : 'Confirm'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDelete(false)}
+                        disabled={isDeleting}
+                        className="glass-button text-xs"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(true)}
+                      className="rounded-lg border border-danger/30 p-2 text-danger hover:bg-danger/10 transition-colors"
+                      title="Delete job"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )
+                )}
               </div>
               <div className="flex items-center gap-3">
                 {isEditMode && initialValues?.id && onFinishJob ? (
@@ -844,5 +1000,18 @@ export default function NewJobModal({
         </div>
       )}
     </AnimatePresence>
+
+    {/* Service catalog picker */}
+    <AnimatePresence>
+      {servicePickerOpen && (
+        <ServicePicker
+          isOpen={servicePickerOpen}
+          onClose={() => setServicePickerOpen(false)}
+          onSelect={handleServiceSelected}
+          addedIds={addedServiceIds}
+        />
+      )}
+    </AnimatePresence>
+    </>
   );
 }

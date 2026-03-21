@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { emitAppointmentCreated, emitAppointmentCancelled } from './automationEventsApi';
 
 export const DEFAULT_TIMEZONE = 'America/Montreal';
 const CACHE_TTL_MS = 30_000;
@@ -68,8 +69,8 @@ function mapScheduleRow(row: any): ScheduleEventRecord {
     id: row.id,
     job_id: row.job_id,
     team_id: row.team_id ?? row.job?.team_id ?? null,
-    start_at: row.start_at || row.start_time,
-    end_at: row.end_at || row.end_time,
+    start_at: row.start_at,
+    end_at: row.end_at,
     timezone: row.timezone || DEFAULT_TIMEZONE,
     status: row.status ?? null,
     notes: row.notes ?? null,
@@ -97,26 +98,7 @@ export function invalidateScheduleCache() {
   eventsCache.clear();
 }
 
-export async function listTeams(): Promise<TeamRecord[]> {
-  const { data, error } = await supabase
-    .from('teams')
-    .select('id,org_id,name,color_hex,created_at')
-    .order('name', { ascending: true });
-  if (error) throw error;
-  return (data || []) as TeamRecord[];
-}
-
-export async function updateTeamColor(teamId: string, colorHex: string): Promise<TeamRecord> {
-  const { data, error } = await supabase
-    .from('teams')
-    .update({ color_hex: colorHex, updated_at: new Date().toISOString() })
-    .eq('id', teamId)
-    .select('id,org_id,name,color_hex,created_at')
-    .single();
-  if (error) throw error;
-  invalidateScheduleCache();
-  return data as TeamRecord;
-}
+// listTeams and updateTeamColor have been moved to teamsApi.ts — use those instead.
 
 export async function listScheduleEventsRange(params: {
   startAt: string;
@@ -138,9 +120,9 @@ export async function listScheduleEventsRange(params: {
     .from('schedule_events')
     .select(
       `
-      id,job_id,team_id,start_at,end_at,start_time,end_time,timezone,status,notes,deleted_at,
+      id,job_id,team_id,start_at,end_at,timezone,status,notes,deleted_at,
       job:jobs!schedule_events_job_id_fkey(
-        id,title,status,client_id,client_name,property_address,lead_id,team_id,latitude,longitude,geocode_status,total_cents
+        id,title,status,client_id,client_name,property_address,lead_id,team_id,latitude,longitude,geocode_status,total_cents,deleted_at
       )
       `
     )
@@ -149,11 +131,31 @@ export async function listScheduleEventsRange(params: {
     .gt('end_at', startAt)
     .order('start_at', { ascending: true });
 
-  if (teamIds.length > 0) query = query.in('team_id', teamIds);
+  // When specific teams are selected, include events that match by schedule_events.team_id
+  // OR by the linked job's team_id (for events created before team was propagated).
+  // Also include events with NULL team_id (unassigned) so they don't disappear.
+  if (teamIds.length > 0) {
+    const teamFilter = teamIds.map((id) => `"${id}"`).join(',');
+    query = query.or(`team_id.in.(${teamFilter}),team_id.is.null`);
+  }
 
   const { data, error } = await query;
   if (error) throw error;
-  const rows = (data || []).map(mapScheduleRow);
+  // Filter out events whose parent job has been soft-deleted (keep events even if job join is null)
+  let activeRows = (data || []).filter((row: any) => {
+    if (row.job && row.job.deleted_at) return false; // job was soft-deleted
+    return true;
+  });
+  // Secondary team filter: for events with NULL team_id, check if the job's team_id matches
+  if (teamIds.length > 0) {
+    activeRows = activeRows.filter((row: any) => {
+      if (row.team_id && teamIds.includes(row.team_id)) return true;
+      if (!row.team_id && row.job?.team_id && teamIds.includes(row.job.team_id)) return true;
+      if (!row.team_id && !row.job?.team_id) return true; // truly unassigned: show everywhere
+      return false;
+    });
+  }
+  const rows = activeRows.map(mapScheduleRow);
   eventsCache.set(key, { cachedAt: now, rows });
   return rows;
 }
@@ -164,10 +166,14 @@ export async function listUnscheduledJobs(teamIds?: string[]): Promise<Unschedul
     .select('id,title,status,team_id,client_name,property_address,lead_id,scheduled_at,total_cents')
     .is('deleted_at', null)
     .is('scheduled_at', null)
-    .in('status', ['draft'])
+    .in('status', ['draft', 'Draft'])
     .order('created_at', { ascending: false });
 
-  if (teamIds && teamIds.length > 0) query = query.in('team_id', teamIds);
+  // Always include unassigned jobs (team_id IS NULL) alongside jobs matching selected teams
+  if (teamIds && teamIds.length > 0) {
+    const teamFilter = teamIds.map((id) => `"${id}"`).join(',');
+    query = query.or(`team_id.in.(${teamFilter}),team_id.is.null`);
+  }
 
   const { data, error } = await query;
   if (error) throw error;
@@ -200,7 +206,16 @@ export async function scheduleUnscheduledJob(payload: {
   if (error) throw error;
   invalidateScheduleCache();
   const eventRow = (data as any)?.event || data;
-  return mapScheduleRow(eventRow);
+  const mapped = mapScheduleRow(eventRow);
+
+  // Fire automation hook (non-blocking)
+  emitAppointmentCreated({
+    eventId: mapped.id,
+    jobId: payload.jobId,
+    startTime: payload.startAt,
+  });
+
+  return mapped;
 }
 
 export async function rescheduleEvent(payload: {
@@ -219,8 +234,25 @@ export async function rescheduleEvent(payload: {
   });
   if (error) throw error;
   invalidateScheduleCache();
+
+  // Sync job.scheduled_at / end_at to match the rescheduled event
+  const event = mapScheduleRow((data as any)?.event);
+  if (event.job_id) {
+    supabase
+      .from('jobs')
+      .update({
+        scheduled_at: toIsoOrThrow(payload.startAt),
+        end_at: toIsoOrThrow(payload.endAt),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', event.job_id)
+      .then(({ error: jobErr }) => {
+        if (jobErr) console.warn('Failed to sync job dates after reschedule:', jobErr.message);
+      });
+  }
+
   return {
-    event: mapScheduleRow((data as any)?.event),
+    event,
     overlaps: Number((data as any)?.overlaps || 0),
   };
 }
@@ -232,4 +264,12 @@ export async function unscheduleJob(payload: { jobId: string; eventId?: string |
   });
   if (error) throw error;
   invalidateScheduleCache();
+
+  // Fire automation hook (non-blocking)
+  if (payload.eventId) {
+    emitAppointmentCancelled({
+      eventId: payload.eventId,
+      jobId: payload.jobId,
+    });
+  }
 }

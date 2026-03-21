@@ -13,8 +13,10 @@ import { supabase } from '../lib/supabase';
 import { Task, Lead } from '../types';
 import { formatDate, cn } from '../lib/utils';
 import { PageHeader, StatCard, EmptyState } from '../components/ui';
+import { useTranslation } from '../i18n';
 
 export default function Tasks() {
+  const { t } = useTranslation();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,39 +93,39 @@ export default function Tasks() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Tasks" subtitle={`${activeTasks.length} pending`} />
+      <PageHeader title={t.tasks.title} subtitle={`${activeTasks.length} ${t.tasks.pending}`} />
 
       {/* KPIs */}
       <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Pending" value={activeTasks.length} />
-        <StatCard label="Completed" value={completedTasks.length} />
-        <StatCard label="Total" value={tasks.length} />
+        <StatCard label={t.tasks.pendingLabel} value={activeTasks.length} />
+        <StatCard label={t.tasks.completed} value={completedTasks.length} />
+        <StatCard label={t.common.total} value={tasks.length} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-5">
         {/* Quick Add */}
         <div className="space-y-3">
           <div className="section-card p-4">
-            <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary mb-3">Quick Add</h3>
+            <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary mb-3">{t.tasks.quickAdd}</h3>
             <form onSubmit={addTask} className="space-y-3">
               <div>
-                <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Title</label>
+                <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.common.title}</label>
                 <input
                   type="text"
-                  placeholder="What needs to be done?"
+                  placeholder={t.tasks.whatNeedsDone}
                   value={newTaskTitle}
                   onChange={(e) => setNewTaskTitle(e.target.value)}
                   className="glass-input w-full mt-1"
                 />
               </div>
               <div>
-                <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">Link to Lead</label>
+                <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{t.tasks.linkToLead}</label>
                 <select
                   value={selectedLeadId}
                   onChange={(e) => setSelectedLeadId(e.target.value)}
                   className="glass-input w-full mt-1"
                 >
-                  <option value="">No Lead</option>
+                  <option value="">{t.tasks.noLead}</option>
                   {leads.map((lead) => (
                     <option key={lead.id} value={lead.id}>
                       {lead.first_name} {lead.last_name}
@@ -133,7 +135,7 @@ export default function Tasks() {
               </div>
               <button type="submit" className="glass-button-primary w-full inline-flex items-center justify-center gap-1.5">
                 <Plus size={15} />
-                Create Task
+                {t.tasks.createTask}
               </button>
             </form>
           </div>
@@ -144,7 +146,7 @@ export default function Tasks() {
           {/* Active */}
           <div>
             <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary mb-2 px-1">
-              Active ({activeTasks.length})
+              {t.tasks.activeTasks} ({activeTasks.length})
             </h3>
             <div className="space-y-1.5">
               <AnimatePresence mode="popLayout">
@@ -161,8 +163,8 @@ export default function Tasks() {
               {activeTasks.length === 0 && (
                 <EmptyState
                   icon={CheckSquare}
-                  title="All caught up"
-                  description="No pending tasks. Add one to get started."
+                  title={t.tasks.allCaughtUp}
+                  description={t.tasks.noPendingTasks}
                 />
               )}
             </div>
@@ -172,7 +174,7 @@ export default function Tasks() {
           {completedTasks.length > 0 && (
             <div>
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary mb-2 px-1">
-                Completed ({completedTasks.length})
+                {t.tasks.completed} ({completedTasks.length})
               </h3>
               <div className="space-y-1.5 opacity-60">
                 {completedTasks.map((task) => (

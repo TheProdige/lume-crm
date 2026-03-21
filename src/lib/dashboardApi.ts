@@ -68,8 +68,15 @@ export interface BusinessPerformance {
     next7Days: number;
   };
   revenue: {
-    currentMonth: Money;
+    today: Money;
   };
+  outstanding: {
+    totalCents: number;
+  };
+  todayJobs: number;
+  newLeadsToday: number;
+  conversionRate: number;
+  upcomingAppointments: number;
   upcomingPayouts: {
     total: number;
     processing: number;
@@ -128,7 +135,6 @@ export async function getDashboardData(): Promise<DashboardData> {
   const now = new Date();
   const { startIso: dayStart, endIso: dayEnd } = getDayRange(now);
   const { startIso: weekStart, endIso: weekEnd } = getNext7DaysRange(now);
-  const { startIso: monthStart, endIso: monthEnd } = getMonthRange(now);
 
   const [{ data: authData }, orgId] = await Promise.all([supabase.auth.getUser(), getCurrentOrgId()]);
   const user = authData.user;
@@ -169,14 +175,57 @@ export async function getDashboardData(): Promise<DashboardData> {
   let revenueJobsQuery = supabase
     .from('jobs_active')
     .select('id,status,total_amount,total_cents,updated_at')
-    .gte('updated_at', monthStart)
-    .lte('updated_at', monthEnd);
+    .gte('updated_at', dayStart)
+    .lte('updated_at', dayEnd);
+
+  // Invoice-based revenue: paid invoices today
+  let paidInvoicesTodayQuery = supabase
+    .from('invoices')
+    .select('id,total_cents,paid_at')
+    .eq('status', 'paid')
+    .is('deleted_at', null)
+    .gte('paid_at', dayStart)
+    .lte('paid_at', dayEnd);
+
+  // Outstanding invoices (sent or partial, not paid)
+  let outstandingInvoicesQuery = supabase
+    .from('invoices')
+    .select('id,balance_cents,status')
+    .is('deleted_at', null)
+    .in('status', ['sent', 'partial']);
+
+  // New leads today
+  let leadsTodayQuery = supabase
+    .from('pipeline_deals')
+    .select('id,stage,created_at')
+    .is('deleted_at', null)
+    .gte('created_at', dayStart)
+    .lte('created_at', dayEnd);
+
+  // Jobs scheduled today
+  let jobsTodayQuery = supabase
+    .from('schedule_events')
+    .select('id')
+    .is('deleted_at', null)
+    .gte('start_at', dayStart)
+    .lte('start_at', dayEnd);
+
+  // Conversion rate: all leads vs closed leads
+  let allLeadsQuery = supabase
+    .from('pipeline_deals')
+    .select('id,stage')
+    .is('deleted_at', null);
 
   dealsQuery = dealsQuery.eq('org_id', orgId);
   jobsQuery = jobsQuery.eq('org_id', orgId);
   todayEventsQuery = todayEventsQuery.eq('org_id', orgId);
   upcomingEventsQuery = upcomingEventsQuery.eq('org_id', orgId);
   revenueJobsQuery = revenueJobsQuery.eq('org_id', orgId);
+  paidInvoicesTodayQuery = paidInvoicesTodayQuery.eq('org_id', orgId);
+  outstandingInvoicesQuery = outstandingInvoicesQuery.eq('org_id', orgId);
+  leadsTodayQuery = leadsTodayQuery.eq('org_id', orgId);
+  jobsTodayQuery = jobsTodayQuery.eq('org_id', orgId);
+  allLeadsQuery = allLeadsQuery.eq('org_id', orgId);
 
   const [
     { data: profileRow, error: profileError },
@@ -185,7 +234,16 @@ export async function getDashboardData(): Promise<DashboardData> {
     { data: todayRows, error: todayError },
     { data: upcomingRows, error: upcomingError },
     { data: revenueRows, error: revenueError },
-  ] = await Promise.all([profileQuery, dealsQuery, jobsQuery, todayEventsQuery, upcomingEventsQuery, revenueJobsQuery]);
+    { data: paidToday },
+    { data: outstandingRows },
+    { data: leadsToday },
+    { data: jobsTodayRows },
+    { data: allLeads },
+  ] = await Promise.all([
+    profileQuery, dealsQuery, jobsQuery, todayEventsQuery, upcomingEventsQuery, revenueJobsQuery,
+    paidInvoicesTodayQuery, outstandingInvoicesQuery,
+    leadsTodayQuery, jobsTodayQuery, allLeadsQuery,
+  ]);
 
   if (profileError) throw profileError;
   if (dealsError) throw dealsError;
@@ -200,9 +258,10 @@ export async function getDashboardData(): Promise<DashboardData> {
   const upcomingEvents = upcomingRows || [];
   const revenueJobs = revenueRows || [];
 
-  const draftCount = deals.filter((deal) => ['qualified', 'contact'].includes(normalize(deal.stage))).length;
+  // Pipeline metrics using new stage names: new, follow_up_1, follow_up_2, follow_up_3, closed, lost
+  const draftCount = deals.filter((deal) => normalize(deal.stage) === 'new').length;
   const approvedCount = deals.filter((deal) => normalize(deal.stage) === 'closed').length;
-  const changesRequestedCount = deals.filter((deal) => normalize(deal.stage) === 'quote_sent').length;
+  const changesRequestedCount = deals.filter((deal) => ['follow_up_2', 'follow_up_3'].includes(normalize(deal.stage))).length;
   const activeLeadsCount = deals.filter((deal) => !['closed', 'lost'].includes(normalize(deal.stage))).length;
   const approvedAmount = deals
     .filter((deal) => normalize(deal.stage) === 'closed')
@@ -259,6 +318,29 @@ export async function getDashboardData(): Promise<DashboardData> {
     .filter((job) => ['completed', 'done'].includes(normalize(job.status)))
     .reduce((sum, job) => sum + moneyFromRow(job), 0);
 
+  // Invoice-based revenue today (cents -> dollars)
+  const invoiceRevenueToday = (paidToday || []).reduce(
+    (sum: number, inv: any) => sum + Number(inv.total_cents || 0) / 100, 0
+  );
+
+  // Outstanding (cents -> dollars)
+  const outstandingTotal = (outstandingRows || []).reduce(
+    (sum: number, inv: any) => sum + Number(inv.balance_cents || 0), 0
+  );
+
+  // New leads today
+  const newLeadsTodayCount = (leadsToday || []).length;
+  const jobsTodayCount = (jobsTodayRows || []).length;
+
+  // Conversion rate
+  const allLeadsList = allLeads || [];
+  const closedLeads = allLeadsList.filter((l: any) => normalize(l.stage) === 'closed').length;
+  const totalLeads = allLeadsList.length;
+  const conversionRate = totalLeads > 0 ? Math.round((closedLeads / totalLeads) * 100) : 0;
+
+  // Use invoice-based revenue if available, otherwise fall back to job-based
+  const finalRevenueToday = invoiceRevenueToday > 0 ? invoiceRevenueToday : revenueMonth;
+
   return {
     user: {
       fullName:
@@ -309,8 +391,15 @@ export async function getDashboardData(): Promise<DashboardData> {
         next7Days: upcomingEvents.length,
       },
       revenue: {
-        currentMonth: revenueMonth,
+        today: finalRevenueToday,
       },
+      outstanding: {
+        totalCents: outstandingTotal,
+      },
+      todayJobs: jobsTodayCount,
+      newLeadsToday: newLeadsTodayCount,
+      conversionRate,
+      upcomingAppointments: upcomingEvents.length,
       upcomingPayouts: {
         total: 0,
         processing: 0,
