@@ -1,6 +1,11 @@
 
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Import config (initializes dotenv, validates env vars)
 import { supabaseUrl, supabaseServiceRoleKey, twilioClient, twilioPhoneNumber, resendApiKey } from './lib/config';
@@ -33,9 +38,14 @@ import directorPanelRouter from './routes/director-panel';
 import teamSuggestionsRouter from './routes/team-suggestions';
 import jobsRouter from './routes/jobs';
 import trackingRouter from './routes/tracking';
+import requestFormsRouter from './routes/request-forms';
+import quoteTemplatesRouter from './routes/quote-templates';
 import featureFlagsRouter from './routes/feature-flags';
 import aiProxyRouter from './routes/ai-proxy';
 import agentRouter from './routes/agent';
+import invitationsRouter from './routes/invitations';
+import billingRouter from './routes/billing';
+import referralsRouter from './routes/referrals';
 
 const app = express();
 
@@ -68,14 +78,10 @@ app.use((_req, res, next) => {
   next();
 });
 
-// ── CORS — strict in prod, permissive in dev ──
-const allowedOrigin = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? undefined : 'http://localhost:5173');
-if (process.env.NODE_ENV === 'production' && !allowedOrigin) {
-  console.error('FATAL: FRONTEND_URL is required in production');
-  process.exit(1);
-}
+// ── CORS ──
+const frontendUrl = (process.env.FRONTEND_URL || '').trim();
 app.use(cors({
-  origin: allowedOrigin,
+  origin: frontendUrl || true,
   credentials: true,
 }));
 
@@ -105,7 +111,7 @@ setInterval(() => {
   }
 }, 300_000);
 
-const port = Number(process.env.API_PORT || 3002);
+const port = Number(process.env.PORT || process.env.API_PORT || 3002);
 
 // ── Stripe webhook must be mounted BEFORE express.json() ──
 // Stripe requires the raw body for signature verification, so this route
@@ -174,6 +180,13 @@ app.use('/api', surveysRouter);
 app.use('/api', teamSuggestionsRouter);
 app.use('/api', jobsRouter);
 app.use('/api', trackingRouter);
+const formSubmitLimiter = rateLimit({ windowMs: 60_000, max: 10 }); // per IP — public form submissions
+app.use('/api/public/form', formSubmitLimiter);
+app.use('/api', requestFormsRouter);
+app.use('/api', quoteTemplatesRouter);
+app.use('/api', invitationsRouter);
+app.use('/api', billingRouter);
+app.use('/api', referralsRouter);
 
 // ── Workflow action bridge — routes visual workflow actions to the real engine ──
 app.post('/api/workflows/execute-action', async (req, res) => {
@@ -227,6 +240,16 @@ app.post('/api/workflows/execute-action', async (req, res) => {
   }
 });
 
+// ── Serve static frontend (production) ──
+const distPath = path.resolve(__dirname, '..', 'dist');
+app.use(express.static(distPath));
+
+// SPA fallback — serve index.html for all non-API routes
+app.get('*', (_req, res, next) => {
+  if (_req.path.startsWith('/api')) return next();
+  res.sendFile(path.join(distPath, 'index.html'));
+});
+
 // Health check endpoint
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
@@ -253,8 +276,8 @@ if (encKeyRaw) {
   }
 }
 
-app.listen(port, () => {
-  console.log(`API listening on http://localhost:${port}`);
+app.listen(port, '0.0.0.0', () => {
+  console.log(`API listening on 0.0.0.0:${port}`);
 
   // Start automation scheduler
   startScheduler(supabaseUrl, supabaseServiceRoleKey, {
